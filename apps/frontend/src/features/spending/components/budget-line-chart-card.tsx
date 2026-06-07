@@ -422,7 +422,7 @@ export function BudgetLineChartCard({
         ) : (
           <div
             data-no-swipe-drag
-            className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1"
+            className="-mx-1 flex min-w-0 touch-pan-x gap-3 overflow-x-auto overscroll-x-contain px-1 pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             style={{
               maskImage: "linear-gradient(to right, black calc(100% - 32px), transparent 100%)",
               WebkitMaskImage:
@@ -569,7 +569,7 @@ function BudgetRing({
   return (
     <Link
       to={`/activities?tab=spending&category=${encodeURIComponent(ring.categoryId)}`}
-      className="hover:bg-muted/40 flex shrink-0 flex-col items-center gap-1 rounded-md px-1 py-1 transition-colors"
+      className="hover:bg-muted/40 flex w-16 shrink-0 flex-col items-center gap-1 rounded-md px-1 py-1 transition-colors"
       title={`${ring.name}: ${ring.spent.toFixed(2)} / ${ring.target.toFixed(2)}`}
     >
       <div className="relative" style={{ width: size, height: size }}>

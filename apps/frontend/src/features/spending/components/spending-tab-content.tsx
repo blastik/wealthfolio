@@ -358,19 +358,6 @@ export default function SpendingTabContent() {
   }, [appTimezone]);
   const { data: monthReport } = useSpendingReport(monthReportReq);
 
-  const subsActivitiesReq = useMemo(() => {
-    const end = getZonedDateParts(new Date(), appTimezone);
-    const start = addCalendarDays(end, -90);
-    return {
-      startDate: zonedCalendarDateBoundaryToDate(start, "start", appTimezone).toISOString(),
-      endDate: zonedCalendarDateBoundaryToDate(end, "end", appTimezone).toISOString(),
-    };
-  }, [appTimezone]);
-  const { data: subsActivities = [] } = useCashActivities({
-    startDate: subsActivitiesReq.startDate,
-    endDate: subsActivitiesReq.endDate,
-  });
-
   const historyReportReq = useMemo(() => {
     const today = getZonedDateParts(new Date(), appTimezone);
     const historyStart = addCalendarMonths({ year: today.year, month: today.month, day: 1 }, -3);
@@ -873,7 +860,7 @@ export default function SpendingTabContent() {
           </div>
         </div>
 
-        <div className="grow px-4 pb-[calc(var(--mobile-nav-ui-height)+max(var(--mobile-nav-gap),env(safe-area-inset-bottom)))] pt-24 md:px-6 md:pb-6 md:pt-20 lg:px-10 lg:pb-8 lg:pt-24">
+        <div className="grow px-4 pb-[var(--mobile-nav-total-offset)] pt-24 md:px-6 md:pb-6 md:pt-20 lg:px-10 lg:pb-8 lg:pt-24">
           <div className="flex flex-col gap-6 lg:grid lg:grid-cols-3 lg:gap-20">
             <div className="contents lg:col-span-2 lg:block lg:space-y-6">
               <DashboardCard
@@ -1011,9 +998,13 @@ export default function SpendingTabContent() {
 
               <div className="order-5 lg:order-none">
                 <EventsCard
-                  activities={subsActivities}
+                  activities={activities}
                   accountTypeById={accountTypeById}
                   categoriesMeta={categoriesMeta}
+                  periodEndDate={dateRange?.to ? formatDateISO(dateRange.to) : reportReq.endDate}
+                  periodStartDate={
+                    dateRange?.from ? formatDateISO(dateRange.from) : reportReq.startDate
+                  }
                   theme={theme}
                 />
               </div>
