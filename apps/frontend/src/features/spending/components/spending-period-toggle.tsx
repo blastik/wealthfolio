@@ -107,7 +107,10 @@ export function SpendingPeriodSelector({
 
   return (
     <div
-      className={cn("pointer-events-none relative w-full min-w-0 max-w-full overflow-hidden", className)}
+      className={cn(
+        "pointer-events-none relative w-full min-w-0 max-w-full overflow-hidden",
+        className,
+      )}
       aria-busy={isLoading ? "true" : undefined}
     >
       <div

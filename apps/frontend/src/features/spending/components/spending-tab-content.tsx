@@ -1157,6 +1157,8 @@ export default function SpendingTabContent() {
                   activities={activities}
                   accountTypeById={accountTypeById}
                   categoriesMeta={categoriesMeta}
+                  eventSummaryEndDate={reportReq.endDate}
+                  eventSummaryStartDate={reportReq.startDate}
                   periodEndDate={dateRange?.to ? formatDateISO(dateRange.to) : reportReq.endDate}
                   periodStartDate={
                     dateRange?.from ? formatDateISO(dateRange.from) : reportReq.startDate

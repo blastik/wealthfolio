@@ -48,10 +48,7 @@ export function monthRange(monthKey: string): DateRange {
   return { from: localDateFromParts(start), to: localDateFromParts(end) };
 }
 
-export function monthReportsRange(
-  monthKey: string,
-  timezone?: string | null,
-): ReportsRange | null {
+export function monthReportsRange(monthKey: string, timezone?: string | null): ReportsRange | null {
   const month = parseMonthKey(monthKey);
   if (!month) return null;
   const start = { ...month, day: 1 };

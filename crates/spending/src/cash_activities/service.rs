@@ -488,6 +488,9 @@ impl CashActivityService {
     }
 
     /// Set or clear the spending-event tag on an activity. Pass `None` to clear.
+    /// Event date ranges describe reporting periods; they do not restrict
+    /// manual tagging. This allows pre-event spending like flights or deposits
+    /// to stay attached to the event they belong to.
     ///
     /// **Return contract**: returns the underlying `Activity` row, which does
     /// **not** carry the new tag — `event_id` lives on the `activity_events`
@@ -499,23 +502,13 @@ impl CashActivityService {
     pub async fn set_event(&self, activity_id: &str, event_id: Option<String>) -> Result<Activity> {
         let activity = self.ensure_activity_in_spending_scope(activity_id).await?;
         if let Some(ref event_id) = event_id {
-            let event =
-                self.events
-                    .get_event(event_id)
-                    .await?
-                    .ok_or_else(|| SpendingError::NotFound {
-                        entity: "Spending event",
-                        id: event_id.clone(),
-                    })?;
-            if !self
-                .events
-                .contains_activity_date(&event, &activity.activity_date)?
-            {
-                return Err(SpendingError::InvalidInput {
-                    message: "Activity date is outside the selected event date range".to_string(),
-                }
-                .into());
-            }
+            self.events
+                .get_event(event_id)
+                .await?
+                .ok_or_else(|| SpendingError::NotFound {
+                    entity: "Spending event",
+                    id: event_id.clone(),
+                })?;
         }
         self.activity_events
             .set_activity_event_tag(activity_id, event_id)

@@ -132,7 +132,8 @@ export default function SpendingInsightsPage() {
     ? searchParams.get(SPENDING_MONTH_PARAM)
     : null;
   const customMonth =
-    urlMonth ?? (!searchParams.has("period") && parseMonthKey(persistedMonth) ? persistedMonth : null);
+    urlMonth ??
+    (!searchParams.has("period") && parseMonthKey(persistedMonth) ? persistedMonth : null);
 
   // ─── URL ↔ state sync ─────────────────────────────────────────────────────
   // ?stage=where|changed|when and ?period=MTD|LAST_MONTH|3M|6M|YTD|1Y drive the page
