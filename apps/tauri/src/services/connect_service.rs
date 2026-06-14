@@ -11,6 +11,9 @@ use wealthfolio_connect::{
 };
 use wealthfolio_core::secrets::SecretStore;
 
+const DEFAULT_CONNECT_AUTH_URL: &str = "https://auth.wealthfolio.app";
+const DEFAULT_CONNECT_AUTH_PUBLISHABLE_KEY: &str = "sb_publishable_ZSZbXNtWtnh9i2nqJ2UL4A_NV8ZVutd";
+
 /// Returns true when broker/connect sync was compiled in.
 pub fn is_connect_sync_enabled() -> bool {
     cfg!(feature = "connect-sync")
@@ -42,12 +45,14 @@ fn connect_auth_url() -> Option<String> {
     option_env!("CONNECT_AUTH_URL")
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| Some(DEFAULT_CONNECT_AUTH_URL.to_string()))
 }
 
 fn connect_auth_publishable_key() -> Option<String> {
     option_env!("CONNECT_AUTH_PUBLISHABLE_KEY")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| Some(DEFAULT_CONNECT_AUTH_PUBLISHABLE_KEY.to_string()))
 }
 
 fn token_lifecycle_config() -> Option<TokenLifecycleConfig> {

@@ -9,7 +9,12 @@ import {
 } from "@/adapters";
 import { useAuth } from "@/context/auth-context";
 import { getPlatform } from "@/hooks/use-platform";
-import { CONNECT_ENABLED } from "@/lib/connect-config";
+import {
+  CONNECT_AUTH_PUBLISHABLE_KEY,
+  CONNECT_AUTH_URL,
+  CONNECT_ENABLED,
+  CONNECT_OAUTH_CALLBACK_URL,
+} from "@/lib/connect-config";
 import { createClient, Session, SupabaseClient, User } from "@supabase/supabase-js";
 import {
   createContext,
@@ -27,13 +32,6 @@ import { getUserInfo } from "../services/broker-service";
 import type { UserInfo } from "../types";
 import { parseAuthCallbackUrl } from "../lib/auth-callback";
 
-// Auth configuration - these are public/publishable keys (safe for client-side)
-// Can be overridden via environment variables: CONNECT_AUTH_URL and CONNECT_AUTH_PUBLISHABLE_KEY
-const AUTH_URL = (import.meta.env.CONNECT_AUTH_URL as string) || "https://auth.wealthfolio.app";
-const AUTH_PUBLISHABLE_KEY =
-  (import.meta.env.CONNECT_AUTH_PUBLISHABLE_KEY as string) ||
-  "sb_publishable_ZSZbXNtWtnh9i2nqJ2UL4A_NV8ZVutd";
-
 // Key for storing refresh token in keyring/localStorage (for session restoration)
 // Note: For keyring (Tauri), the "wealthfolio_" prefix is added automatically by SecretStore
 const REFRESH_TOKEN_KEY = "sync_refresh_token";
@@ -46,15 +44,8 @@ const getWebRedirectUrl = () => {
   return `${window.location.origin}/auth/callback`;
 };
 
-// For OAuth on desktop, we use a hosted callback page that redirects to the deep link
-// This is necessary because browsers block direct navigation to custom URL schemes
-// Uses env variable in dev, falls back to production URL for bundled builds
-const HOSTED_OAUTH_CALLBACK_URL =
-  (import.meta.env.CONNECT_OAUTH_CALLBACK_URL as string) ||
-  "https://connect.wealthfolio.app/deeplink";
-
 const parseConfiguredAuthCallbackUrl = (url: string) =>
-  parseAuthCallbackUrl(url, { hostedCallbackUrl: HOSTED_OAUTH_CALLBACK_URL });
+  parseAuthCallbackUrl(url, { hostedCallbackUrl: CONNECT_OAUTH_CALLBACK_URL });
 
 interface WealthfolioConnectContextValue {
   isEnabled: boolean;
@@ -166,8 +157,8 @@ function createHybridPkceStorage(storageKey: string) {
 
 // Create a Supabase client with custom storage for persistent auth
 const createSupabaseClient = () => {
-  const storageKey = getAuthStorageKey(AUTH_URL);
-  return createClient(AUTH_URL, AUTH_PUBLISHABLE_KEY, {
+  const storageKey = getAuthStorageKey(CONNECT_AUTH_URL);
+  return createClient(CONNECT_AUTH_URL, CONNECT_AUTH_PUBLISHABLE_KEY, {
     auth: {
       storageKey,
       storage: createHybridPkceStorage(storageKey),
@@ -503,7 +494,7 @@ function EnabledWealthfolioConnectProvider({ children }: { children: ReactNode }
         const redirectUrl = useASWebAuth
           ? DESKTOP_DEEP_LINK_URL // iOS: direct custom scheme, captured by ASWebAuth
           : isTauri && import.meta.env.PROD
-            ? HOSTED_OAUTH_CALLBACK_URL // Desktop & Android: bounce page → wealthfolio://
+            ? CONNECT_OAUTH_CALLBACK_URL // Desktop & Android: bounce page -> wealthfolio://
             : getWebRedirectUrl(); // Web or dev mode
 
         const useSystemBrowser = isTauri && import.meta.env.PROD && !useASWebAuth;
@@ -586,7 +577,7 @@ function EnabledWealthfolioConnectProvider({ children }: { children: ReactNode }
         const redirectUrl =
           isTauri && import.meta.env.PROD
             ? isMobile
-              ? HOSTED_OAUTH_CALLBACK_URL // Mobile: bounce page → wealthfolio://
+              ? CONNECT_OAUTH_CALLBACK_URL // Mobile: bounce page -> wealthfolio://
               : DESKTOP_DEEP_LINK_URL // Desktop: direct wealthfolio:// from email client
             : getWebRedirectUrl();
 
