@@ -548,6 +548,7 @@ const ActivityPage = () => {
     displayedSearchInput.trim().length > 0;
 
   const clearInvestmentsFilters = useCallback(() => {
+    debouncedUpdateSearch.cancel();
     setPersistedAccountScope({ type: "all" });
     setSelectedActivityTypes([]);
     setSelectedInstrumentTypes([]);
@@ -558,6 +559,7 @@ const ActivityPage = () => {
     clearActivityUrlFilterParams();
   }, [
     clearActivityUrlFilterParams,
+    debouncedUpdateSearch,
     setPersistedAccountScope,
     setSelectedActivityTypes,
     setSelectedInstrumentTypes,
@@ -728,6 +730,7 @@ const ActivityPage = () => {
           onStatusFilterChange={setStatusFilter}
           dateRange={effectiveDateRange}
           onDateRangeChange={setInvestmentDateRange}
+          onResetFilters={clearInvestmentsFilters}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           totalFetched={shouldUseDatagridView ? undefined : totalFetched}
