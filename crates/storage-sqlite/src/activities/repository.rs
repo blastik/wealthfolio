@@ -267,7 +267,10 @@ fn source_group_blocks_transfer_link(
         return Ok(false);
     };
     if transfer_in.account_id == transfer_out.account_id {
-        return Ok(false);
+        return Ok(is_same_account_cash_fx_conversion_db(
+            transfer_in,
+            transfer_out,
+        ));
     }
 
     Ok(validate_link_transfer_asset_shape(transfer_in, transfer_out).is_ok())
@@ -294,6 +297,25 @@ fn parse_optional_decimal(value: Option<&String>) -> Option<Decimal> {
     value
         .and_then(|value| Decimal::from_str(value.trim()).ok())
         .map(|value| value.abs())
+}
+
+fn has_positive_cash_amount(activity: &ActivityDB) -> bool {
+    parse_optional_decimal(activity.amount.as_ref()).is_some_and(|amount| !amount.is_zero())
+}
+
+fn is_same_account_cash_fx_conversion_db(
+    transfer_in: &ActivityDB,
+    transfer_out: &ActivityDB,
+) -> bool {
+    transfer_in.account_id == transfer_out.account_id
+        && non_cash_transfer_asset_key(transfer_in).is_none()
+        && non_cash_transfer_asset_key(transfer_out).is_none()
+        && has_positive_cash_amount(transfer_in)
+        && has_positive_cash_amount(transfer_out)
+        && !transfer_in
+            .currency
+            .trim()
+            .eq_ignore_ascii_case(transfer_out.currency.trim())
 }
 
 fn validate_link_transfer_asset_shape(
@@ -874,9 +896,12 @@ impl ActivityRepositoryTrait for ActivityRepository {
                         "One or both activities are already linked to another transfer".to_string(),
                     )));
                 }
-                if transfer_in.account_id == transfer_out.account_id {
+                if transfer_in.account_id == transfer_out.account_id
+                    && !is_same_account_cash_fx_conversion_db(&transfer_in, &transfer_out)
+                {
                     return Err(Error::from(ActivityError::InvalidData(
-                        "Both transfer legs share the same account".to_string(),
+                        "Same-account transfer links must be cash FX conversions with different currencies"
+                            .to_string(),
                     )));
                 }
                 validate_link_transfer_asset_shape(&transfer_in, &transfer_out)?;
@@ -2778,6 +2803,26 @@ mod tests {
         source_group_id: Option<&str>,
         metadata: Option<&str>,
     ) {
+        insert_transfer_activity_with_currency(
+            conn,
+            id,
+            account_id,
+            activity_type,
+            source_group_id,
+            metadata,
+            "USD",
+        );
+    }
+
+    fn insert_transfer_activity_with_currency(
+        conn: &mut SqliteConnection,
+        id: &str,
+        account_id: &str,
+        activity_type: &str,
+        source_group_id: Option<&str>,
+        metadata: Option<&str>,
+        currency: &str,
+    ) {
         let activity = ActivityDB {
             id: id.to_string(),
             account_id: account_id.to_string(),
@@ -2793,7 +2838,7 @@ mod tests {
             unit_price: None,
             amount: Some("100".to_string()),
             fee: Some("0".to_string()),
-            currency: "USD".to_string(),
+            currency: currency.to_string(),
             fx_rate: None,
             notes: None,
             metadata: metadata.map(str::to_string),
@@ -3510,7 +3555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn link_transfer_activities_marks_user_modified_and_rejects_same_account() {
+    async fn link_transfer_activities_marks_user_modified_and_allows_same_account_cash_fx() {
         let (pool, writer) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
@@ -3541,6 +3586,24 @@ mod tests {
             None,
             None,
         );
+        insert_transfer_activity_with_currency(
+            &mut conn,
+            "same-account-fx-out",
+            "acc-a",
+            "TRANSFER_OUT",
+            None,
+            Some(r#"{"flow":{"is_external":true}}"#),
+            "USD",
+        );
+        insert_transfer_activity_with_currency(
+            &mut conn,
+            "same-account-fx-in",
+            "acc-a",
+            "TRANSFER_IN",
+            None,
+            Some(r#"{"flow":{"is_external":true}}"#),
+            "CAD",
+        );
 
         let same_account = repo
             .link_transfer_activities("same-account-in".to_string(), "transfer-out".to_string())
@@ -3552,6 +3615,30 @@ mod tests {
             .first(&mut conn)
             .expect("same-account-in group");
         assert_eq!(same_account_group, None);
+
+        let (same_account_fx_in, same_account_fx_out) = repo
+            .link_transfer_activities(
+                "same-account-fx-in".to_string(),
+                "same-account-fx-out".to_string(),
+            )
+            .await
+            .expect("same-account cash FX link should succeed");
+        assert_eq!(same_account_fx_in.account_id, "acc-a");
+        assert_eq!(same_account_fx_out.account_id, "acc-a");
+        assert_eq!(
+            same_account_fx_in.source_group_id,
+            same_account_fx_out.source_group_id
+        );
+        assert_eq!(
+            same_account_fx_in.metadata.as_ref().and_then(|m| {
+                m.get("flow")
+                    .and_then(|flow| flow.get("is_external"))
+                    .and_then(|value| value.as_bool())
+            }),
+            Some(false)
+        );
+        assert_eq!(activity_user_modified(&mut conn, "same-account-fx-in"), 1);
+        assert_eq!(activity_user_modified(&mut conn, "same-account-fx-out"), 1);
 
         let (transfer_in, transfer_out) = repo
             .link_transfer_activities("transfer-in".to_string(), "transfer-out".to_string())
@@ -3582,7 +3669,7 @@ mod tests {
         );
         assert_eq!(activity_user_modified(&mut conn, "transfer-in"), 1);
         assert_eq!(activity_user_modified(&mut conn, "transfer-out"), 1);
-        assert_eq!(sync_outbox_count(&mut conn), 2);
+        assert_eq!(sync_outbox_count(&mut conn), 4);
     }
 
     #[tokio::test]

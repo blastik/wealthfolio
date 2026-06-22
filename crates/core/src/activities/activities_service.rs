@@ -188,16 +188,15 @@ impl ActivityService {
         activity: &ActivityUpdate,
         existing: &Activity,
     ) -> bool {
-        if activity.amount.is_some()
-            || !PRICE_BEARING_ACTIVITY_TYPES.contains(&activity.activity_type.as_str())
-        {
+        if activity.amount.is_some() {
             return false;
         }
 
         let asset_id = activity.get_symbol_id().or(existing.asset_id.as_deref());
-        if activity.activity_type == ACTIVITY_TYPE_TRANSFER_IN
-            && !is_securities_transfer(&activity.activity_type, asset_id)
-        {
+        let derives_amount_from_quantity_price = PRICE_BEARING_ACTIVITY_TYPES
+            .contains(&activity.activity_type.as_str())
+            || is_securities_transfer(&activity.activity_type, asset_id);
+        if !derives_amount_from_quantity_price {
             return false;
         }
         if self.is_bond_asset(asset_id) {
@@ -834,6 +833,31 @@ impl ActivityService {
             });
         }
 
+        if crate::activities::is_same_account_cash_fx_conversion(source, candidate)
+            || crate::activities::is_same_account_cash_fx_conversion(candidate, source)
+        {
+            reasons.push("Same account".to_string());
+            reasons.push("Cash FX conversion".to_string());
+            if day_diff == 0 {
+                reasons.push("Same date".to_string());
+            } else {
+                warnings.push(format!("Dates differ by {} day(s).", day_diff));
+            }
+
+            return Some(TransferMatchCandidate {
+                activity: candidate.clone(),
+                match_kind: "cash_fx_conversion".to_string(),
+                confidence,
+                score,
+                reasons,
+                warnings,
+            });
+        }
+
+        if source.account_id == candidate.account_id {
+            return None;
+        }
+
         if !source.currency.eq_ignore_ascii_case(&candidate.currency) {
             return None;
         }
@@ -1431,7 +1455,7 @@ impl ActivityService {
     /// and `DataSource::Broker` for MARKET-mode assets (coexists with provider quotes).
     ///
     /// Only called for activity types where `unit_price` represents the asset's
-    /// market price (BUY, SELL, TRANSFER_IN). Income activities (DIVIDEND,
+    /// market price (BUY, SELL). Income activities (DIVIDEND,
     /// INTEREST) store payment amounts in `unit_price`, not asset prices.
     async fn create_quote_from_activity(
         &self,
@@ -2183,11 +2207,11 @@ impl ActivityService {
         activity.amount = activity.amount.map(|v| v.abs());
         activity.fee = activity.fee.map(|v| v.abs());
 
-        // Securities transfers derive monetary value from quantity × unit_price at
-        // read time. Any inbound `amount` is redundant and has historically been
-        // a source of corruption (e.g. amount = qty² × unit_price stored on the
-        // row). Clear it only when unit_price is present so legacy imports that
-        // carry qty + amount (no unit_price) keep their monetary value.
+        // Securities transfer `unit_price` is book cost basis. Transfer-date
+        // market value is derived from quotes by valuation. Any inbound `amount`
+        // is redundant when unit_price is present and has historically corrupted
+        // rows (e.g. amount = qty² × unit_price). Clear it only when unit_price
+        // is present so legacy imports that carry qty + amount keep their value.
         if is_securities_transfer(&activity.activity_type, resolved_asset_id.as_deref())
             && activity.unit_price.is_some()
         {
@@ -3905,7 +3929,6 @@ impl ActivityServiceTrait for ActivityService {
             .into_iter()
             .filter(|candidate| {
                 candidate.id != source.id
-                    && candidate.account_id != source.account_id
                     && candidate.is_posted()
                     && transfer_resolution
                         .pair_for_activity(&candidate.id)
@@ -5684,9 +5707,10 @@ impl ActivityService {
                 activity.status = Some(ActivityStatus::Draft);
             }
 
-            // Securities transfers derive monetary value from quantity × unit_price;
-            // never persist an inbound `amount` for them when unit_price is present
-            // (see prepare_new_activity). Legacy imports with qty + amount and no
+            // Securities transfer `unit_price` is book cost basis; valuation
+            // derives transfer-date market value from quotes. Never persist an
+            // inbound `amount` for them when unit_price is present (see
+            // prepare_new_activity). Legacy imports with qty + amount and no
             // unit_price keep their monetary value.
             if is_securities_transfer(&activity.activity_type, resolved_asset_id.as_deref())
                 && activity.unit_price.is_some()

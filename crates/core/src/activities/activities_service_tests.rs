@@ -12,13 +12,14 @@ mod tests {
     use crate::errors::{DatabaseError, Error, Result};
     use crate::events::{DomainEvent, MockDomainEventSink};
     use crate::fx::{ExchangeRate, FxServiceTrait, NewExchangeRate};
+    use crate::portfolio::economic_events::BasisStatus;
     use crate::portfolio::performance::{PerformanceService, PerformanceServiceTrait};
     use crate::portfolio::snapshot::{
         AccountStateSnapshot, SnapshotRecalcMode, SnapshotServiceTrait,
     };
     use crate::portfolio::valuation::{
         DailyAccountValuation, ExternalFlowSource, NegativeBalanceInfo, ValuationRepositoryTrait,
-        ValuationService, ValuationServiceTrait,
+        ValuationService, ValuationServiceTrait, ValuationStatus,
     };
     use crate::quotes::service::ProviderInfo;
     use crate::quotes::{
@@ -935,6 +936,248 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingQuoteService {
+        updated_quotes: Arc<Mutex<Vec<Quote>>>,
+    }
+
+    impl RecordingQuoteService {
+        fn updated_quotes(&self) -> Vec<Quote> {
+            self.updated_quotes.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl QuoteServiceTrait for RecordingQuoteService {
+        fn get_latest_quote(&self, _symbol: &str) -> Result<Quote> {
+            unimplemented!()
+        }
+
+        fn get_latest_quotes(&self, _symbols: &[String]) -> Result<HashMap<String, Quote>> {
+            unimplemented!()
+        }
+
+        fn get_latest_quotes_as_of(
+            &self,
+            _symbols: &[String],
+            _as_of: chrono::NaiveDate,
+        ) -> Result<HashMap<String, Quote>> {
+            Ok(HashMap::new())
+        }
+
+        fn get_latest_quotes_snapshot(
+            &self,
+            _asset_ids: &[String],
+        ) -> Result<HashMap<String, LatestQuoteSnapshot>> {
+            Ok(HashMap::new())
+        }
+
+        fn get_latest_quotes_pair(
+            &self,
+            _symbols: &[String],
+        ) -> Result<HashMap<String, LatestQuotePair>> {
+            unimplemented!()
+        }
+
+        fn get_historical_quotes(&self, _symbol: &str) -> Result<Vec<Quote>> {
+            unimplemented!()
+        }
+
+        fn get_all_historical_quotes(&self) -> Result<HashMap<String, Vec<(NaiveDate, Quote)>>> {
+            unimplemented!()
+        }
+
+        fn get_quotes_in_range(
+            &self,
+            _symbols: &HashSet<String>,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Quote>> {
+            unimplemented!()
+        }
+
+        fn get_quotes_in_range_filled(
+            &self,
+            _symbols: &HashSet<String>,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Quote>> {
+            unimplemented!()
+        }
+
+        async fn get_daily_quotes(
+            &self,
+            _asset_ids: &HashSet<String>,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<HashMap<NaiveDate, HashMap<String, Quote>>> {
+            unimplemented!()
+        }
+
+        async fn add_quote(&self, _quote: &Quote) -> Result<Quote> {
+            unimplemented!()
+        }
+
+        async fn update_quote(&self, quote: Quote) -> Result<Quote> {
+            self.updated_quotes.lock().unwrap().push(quote.clone());
+            Ok(quote)
+        }
+
+        async fn delete_quote(&self, _quote_id: &str) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn bulk_upsert_quotes(&self, _quotes: Vec<Quote>) -> Result<usize> {
+            unimplemented!()
+        }
+
+        async fn search_symbol(&self, _query: &str) -> Result<Vec<SymbolSearchResult>> {
+            unimplemented!()
+        }
+
+        async fn search_symbol_with_currency(
+            &self,
+            _query: &str,
+            _account_currency: Option<&str>,
+        ) -> Result<Vec<SymbolSearchResult>> {
+            unimplemented!()
+        }
+
+        async fn resolve_symbol_quote(
+            &self,
+            _symbol: &str,
+            _exchange_mic: Option<&str>,
+            _instrument_type: Option<&InstrumentType>,
+            _quote_ccy: Option<&str>,
+            _preferred_provider: Option<&str>,
+        ) -> Result<ResolvedQuote> {
+            unimplemented!()
+        }
+
+        async fn get_asset_profile(&self, _asset: &Asset) -> Result<ProviderProfile> {
+            unimplemented!()
+        }
+
+        async fn fetch_quotes_from_provider(
+            &self,
+            _asset_id: &str,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Quote>> {
+            unimplemented!()
+        }
+
+        async fn fetch_quotes_for_symbol(
+            &self,
+            _symbol: &str,
+            _currency: &str,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Quote>> {
+            unimplemented!()
+        }
+
+        async fn sync(
+            &self,
+            _mode: SyncMode,
+            _asset_ids: Option<Vec<String>>,
+        ) -> Result<SyncResult> {
+            unimplemented!()
+        }
+
+        async fn resync(&self, _asset_ids: Option<Vec<String>>) -> Result<SyncResult> {
+            unimplemented!()
+        }
+
+        async fn refresh_sync_state(&self) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn get_sync_plan(&self) -> Result<Vec<SymbolSyncPlan>> {
+            unimplemented!()
+        }
+
+        async fn handle_activity_created(
+            &self,
+            _symbol: &str,
+            _activity_date: NaiveDate,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn handle_activity_deleted(&self, _symbol: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_sync_state(&self, _symbol: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_symbols_needing_sync(&self) -> Result<Vec<QuoteSyncState>> {
+            Ok(vec![])
+        }
+
+        fn get_sync_state(&self, _symbol: &str) -> Result<Option<QuoteSyncState>> {
+            Ok(None)
+        }
+
+        async fn mark_profile_enriched(&self, _symbol: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_assets_needing_profile_enrichment(&self) -> Result<Vec<QuoteSyncState>> {
+            Ok(vec![])
+        }
+
+        async fn update_position_status_from_holdings(
+            &self,
+            _current_holdings: &HashMap<String, Decimal>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_sync_states_with_errors(&self) -> Result<Vec<QuoteSyncState>> {
+            Ok(vec![])
+        }
+
+        async fn reset_sync_errors(&self, _asset_ids: &[String]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn reset_sync_state_for_profile_change(&self, _asset_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_providers_info(&self) -> Result<Vec<ProviderInfo>> {
+            Ok(vec![])
+        }
+
+        async fn update_provider_settings(
+            &self,
+            _provider_id: &str,
+            _priority: i32,
+            _enabled: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn check_quotes_import(
+            &self,
+            _content: &[u8],
+            _has_header_row: bool,
+        ) -> Result<Vec<QuoteImport>> {
+            Ok(vec![])
+        }
+
+        async fn import_quotes(
+            &self,
+            quotes: Vec<QuoteImport>,
+            _overwrite: bool,
+        ) -> Result<Vec<QuoteImport>> {
+            Ok(quotes)
+        }
+    }
+
     // --- Mock ActivityRepository ---
     #[derive(Clone, Default)]
     struct MockActivityRepository {
@@ -1548,7 +1791,7 @@ mod tests {
             _start_date: Option<NaiveDate>,
             _end_date: Option<NaiveDate>,
         ) -> Result<Vec<AccountStateSnapshot>> {
-            unimplemented!()
+            Ok(Vec::new())
         }
 
         fn get_latest_holdings_snapshot(
@@ -1659,16 +1902,24 @@ mod tests {
             investment_market_value,
             total_value,
             cost_basis: net_contribution,
+            book_basis: net_contribution,
             net_contribution,
             cash_balance_base: cash_balance,
             investment_market_value_base: investment_market_value,
             total_value_base: total_value,
             cost_basis_base: net_contribution,
+            book_basis_base: net_contribution,
             net_contribution_base: net_contribution,
             external_inflow_base: Decimal::ZERO,
             external_outflow_base: Decimal::ZERO,
             external_flow_source: ExternalFlowSource::Unknown,
             performance_eligible_value_base: total_value,
+            value_status: ValuationStatus::Complete,
+            basis_status: if investment_market_value.is_zero() {
+                BasisStatus::NotApplicable
+            } else {
+                BasisStatus::Complete
+            },
             calculated_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
         }
     }
@@ -1829,6 +2080,69 @@ mod tests {
             fx_rate: None,
             metadata: None,
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_security_transfer_does_not_create_manual_quote_from_cost_basis() {
+        let account_service = Arc::new(MockAccountService::new());
+        let asset_service = Arc::new(MockAssetService::new());
+        let fx_service = Arc::new(MockFxService::new());
+        let activity_repository = Arc::new(MockActivityRepository::new());
+
+        account_service.add_account(create_test_account("acc-1", "USD"));
+        let mut asset = create_test_asset_with_instrument(
+            "asset-aapl",
+            "AAPL",
+            Some("XNAS"),
+            Some(InstrumentType::Equity),
+            "USD",
+        );
+        asset.quote_mode = QuoteMode::Manual;
+        asset_service.add_asset(asset);
+
+        let quote_service = Arc::new(RecordingQuoteService::default());
+        let activity_service = ActivityService::new(
+            activity_repository,
+            account_service,
+            asset_service,
+            fx_service,
+            quote_service.clone(),
+        );
+
+        let created = activity_service
+            .create_activity(NewActivity {
+                id: Some("transfer-1".to_string()),
+                account_id: "acc-1".to_string(),
+                asset: Some(AssetResolutionInput {
+                    id: Some("asset-aapl".to_string()),
+                    ..Default::default()
+                }),
+                activity_type: "TRANSFER_IN".to_string(),
+                subtype: None,
+                activity_date: "2024-01-15".to_string(),
+                quantity: Some(dec!(10)),
+                unit_price: Some(dec!(8)),
+                currency: "USD".to_string(),
+                fee: Some(dec!(0)),
+                amount: Some(dec!(999)),
+                status: None,
+                notes: None,
+                fx_rate: None,
+                metadata: None,
+                needs_review: None,
+                source_system: None,
+                source_record_id: None,
+                source_group_id: None,
+                idempotency_key: None,
+            })
+            .await
+            .expect("security transfer should be created");
+
+        assert_eq!(created.amount, None);
+        assert!(
+            quote_service.updated_quotes().is_empty(),
+            "transfer unit_price is book basis and must not be written as a quote"
+        );
     }
 
     #[tokio::test]
@@ -7511,6 +7825,14 @@ mod tests {
             dec!(100),
             "USD",
         ));
+        activity_repository.add_activity(create_cash_transfer_activity(
+            "same-account-fx",
+            "acc-a",
+            "TRANSFER_IN",
+            "2024-01-17T00:00:00Z",
+            dec!(135),
+            "CAD",
+        ));
         let mut linked = create_cash_transfer_activity(
             "already-linked",
             "acc-c",
@@ -7548,13 +7870,35 @@ mod tests {
             })
             .expect("candidate search should succeed");
 
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].activity.id, "cash-match");
-        assert_eq!(candidates[0].match_kind, "cash");
-        assert!(candidates[0]
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.activity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cash-match", "same-account-fx"]
+        );
+        let cash_match = candidates
+            .iter()
+            .find(|candidate| candidate.activity.id == "cash-match")
+            .expect("cross-account cash candidate");
+        assert_eq!(cash_match.match_kind, "cash");
+        assert!(cash_match
             .warnings
             .iter()
             .any(|warning| warning.contains("Dates differ")));
+
+        let fx_match = candidates
+            .iter()
+            .find(|candidate| candidate.activity.id == "same-account-fx")
+            .expect("same-account FX candidate");
+        assert_eq!(fx_match.match_kind, "cash_fx_conversion");
+        assert!(fx_match
+            .reasons
+            .iter()
+            .any(|reason| reason == "Cash FX conversion"));
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.activity.id == "same-account"));
     }
 
     #[test]
