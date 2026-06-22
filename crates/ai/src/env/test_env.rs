@@ -40,6 +40,7 @@ use wealthfolio_core::{
         AllocationHoldings, AllocationServiceTrait, PortfolioAllocations,
         TaxonomyHoldingContributions,
     },
+    portfolio::economic_events::BasisStatus,
     portfolio::fire::RetirementOverview,
     portfolio::income::{IncomeServiceTrait, IncomeSummary},
     portfolio::performance::{
@@ -1424,6 +1425,7 @@ fn mock_performance_result(id: &str) -> PerformanceResult {
             warnings: Vec::new(),
             not_applicable_reasons: Vec::new(),
         },
+        basis_status: BasisStatus::NotApplicable,
         series: Vec::new(),
         is_holdings_mode: false,
         is_mixed_tracking_mode: false,
@@ -1680,6 +1682,7 @@ impl HealthServiceTrait for MockHealthService {
         _asset_service: Arc<dyn AssetServiceTrait>,
         _taxonomy_service: Arc<dyn TaxonomyServiceTrait>,
         _valuation_service: Arc<dyn ValuationServiceTrait>,
+        _snapshot_service: Arc<dyn wealthfolio_core::portfolio::snapshot::SnapshotServiceTrait>,
         _activity_service: Arc<dyn ActivityServiceTrait>,
         _lot_repository: Arc<dyn wealthfolio_core::lots::LotRepositoryTrait>,
         _configured_timezone: Option<&str>,
