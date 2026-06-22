@@ -476,18 +476,69 @@ impl DataConsistencyCheck {
 
         if let Some(flow_issues) = by_type.get(&ConsistencyIssueType::UnknownPerformanceFlowSource)
         {
-            health_issues.push(build_valuation_quality_issue(
+            health_issues.push(build_unknown_performance_flow_issue(
                 "unknown_performance_flow_source",
                 flow_issues,
                 Severity::Error,
                 "Performance flow boundary is unknown",
                 "valuation rows have unknown transfer classification",
-                "Some generated valuation rows include a transfer or flow whose portfolio boundary is unknown. Review the related transfer classification so returns can be calculated safely.",
+                "Some generated valuation rows include a transfer or flow whose portfolio boundary is unknown. Review transfer activities on the affected dates and mark each transfer external or link it to its matching account.",
             ));
         }
 
         health_issues
     }
+}
+
+fn build_unknown_performance_flow_issue(
+    id_prefix: &str,
+    issues: &[&ConsistencyIssueInfo],
+    severity: Severity,
+    title: &str,
+    plural_title: &str,
+    message: &str,
+) -> HealthIssue {
+    let mut issue =
+        build_valuation_quality_issue(id_prefix, issues, severity, title, plural_title, message);
+    let mut query = serde_json::Map::new();
+
+    query.insert(
+        "types".to_string(),
+        serde_json::json!("TRANSFER_IN,TRANSFER_OUT"),
+    );
+    query.insert(
+        "q".to_string(),
+        serde_json::json!("InternalSecurityTransfer"),
+    );
+
+    let mut dates: Vec<_> = issues.iter().filter_map(|i| i.activity_date).collect();
+    dates.sort_unstable();
+    if let Some(first_date) = dates.first() {
+        query.insert(
+            "from".to_string(),
+            serde_json::json!(first_date.to_string()),
+        );
+    }
+    if let Some(last_date) = dates.last() {
+        query.insert("to".to_string(), serde_json::json!(last_date.to_string()));
+    }
+
+    let mut account_ids: Vec<_> = issues
+        .iter()
+        .filter_map(|i| i.account_id.as_ref())
+        .collect();
+    account_ids.sort();
+    account_ids.dedup();
+    if let [account_id] = account_ids.as_slice() {
+        query.insert("account".to_string(), serde_json::json!(account_id));
+    }
+
+    issue.navigate_action = Some(NavigateAction {
+        route: "/activities".to_string(),
+        query: Some(serde_json::Value::Object(query)),
+        label: "View Activities".to_string(),
+    });
+    issue
 }
 
 fn build_valuation_quality_issue(
@@ -895,6 +946,36 @@ mod tests {
         assert_eq!(
             title_for("unknown_performance_flow_source:"),
             Some("2 valuation rows have unknown transfer classification")
+        );
+
+        let unknown_flow_issue = issues
+            .iter()
+            .find(|issue| issue.id.starts_with("unknown_performance_flow_source:"))
+            .expect("unknown flow issue");
+        let navigate_query = unknown_flow_issue
+            .navigate_action
+            .as_ref()
+            .and_then(|action| action.query.as_ref())
+            .expect("unknown flow activity query");
+        assert_eq!(
+            navigate_query.get("types"),
+            Some(&serde_json::json!("TRANSFER_IN,TRANSFER_OUT"))
+        );
+        assert_eq!(
+            navigate_query.get("q"),
+            Some(&serde_json::json!("InternalSecurityTransfer"))
+        );
+        assert_eq!(
+            navigate_query.get("account"),
+            Some(&serde_json::json!("acc_tfsa"))
+        );
+        assert_eq!(
+            navigate_query.get("from"),
+            Some(&serde_json::json!("2026-06-01"))
+        );
+        assert_eq!(
+            navigate_query.get("to"),
+            Some(&serde_json::json!("2026-06-01"))
         );
     }
 

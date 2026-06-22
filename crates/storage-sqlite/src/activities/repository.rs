@@ -403,6 +403,7 @@ impl ActivityRepository {
                         .like(pattern.clone())
                         .or(assets::name.like(pattern.clone()))
                         .or(assets::display_code.like(pattern.clone()))
+                        .or(activities::subtype.like(pattern.clone()))
                         .or(activities::notes.like(pattern)),
                 );
             }
@@ -2729,6 +2730,7 @@ mod tests {
         source_record_id: &'a str,
         amount: &'a str,
         notes: &'a str,
+        subtype: Option<&'a str>,
     }
 
     fn insert_broker_activity(conn: &mut SqliteConnection, seed: BrokerActivitySeed<'_>) {
@@ -2738,7 +2740,7 @@ mod tests {
               status, activity_date, settlement_date, quantity, unit_price, amount, fee, currency, \
               fx_rate, notes, metadata, source_system, source_record_id, source_group_id, \
               idempotency_key, import_run_id, is_user_modified, needs_review, created_at, updated_at) \
-             VALUES ('{}', 'broker-local-account', NULL, '{}', {}, NULL, NULL, \
+             VALUES ('{}', 'broker-local-account', NULL, '{}', {}, NULL, {}, \
                      'POSTED', '2026-01-01T00:00:00Z', NULL, '10', '5', '{}', '1', 'USD', \
                      NULL, '{}', '{{\"broker\":\"keep\"}}', '{}', '{}', \
                      NULL, 'local-idempotency-key-{}', 'local-import-run', 0, 0, \
@@ -2746,6 +2748,7 @@ mod tests {
             seed.id,
             seed.activity_type,
             sql_value(seed.activity_type_override),
+            sql_value(seed.subtype),
             seed.amount,
             seed.notes.replace('\'', "''"),
             seed.source_system,
@@ -2992,6 +2995,7 @@ mod tests {
                     source_record_id: "broker-record-sell",
                     amount: "50",
                     notes: "Broker override",
+                    subtype: Some("INTERNALSECURITYTRANSFER"),
                 },
             );
             insert_broker_activity(
@@ -3004,6 +3008,7 @@ mod tests {
                     source_record_id: "broker-record-dividend",
                     amount: "5",
                     notes: "Broker dividend",
+                    subtype: None,
                 },
             );
         }
@@ -3049,6 +3054,23 @@ mod tests {
             .map(|activity| activity.id.as_str())
             .collect();
         assert_eq!(ids, vec!["broker-dividend", "broker-buy-override"]);
+
+        let subtype_match = repo
+            .search_activities(
+                0,
+                10,
+                None,
+                None,
+                Some("InternalSecurityTransfer".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("search by subtype keyword");
+        assert_eq!(subtype_match.data.len(), 1);
+        assert_eq!(subtype_match.data[0].id, "broker-buy-override");
     }
 
     #[tokio::test]
@@ -3128,6 +3150,7 @@ mod tests {
                     source_record_id: "broker-record-override",
                     amount: "50",
                     notes: "Old note",
+                    subtype: None,
                 },
             );
         }
@@ -3212,6 +3235,7 @@ mod tests {
                     source_record_id: "broker-record-owned",
                     amount: "50",
                     notes: "Broker note",
+                    subtype: None,
                 },
             );
         }
@@ -3903,6 +3927,7 @@ mod tests {
                 source_record_id: "broker-transfer-record-in",
                 amount: "100",
                 notes: "Broker transfer in",
+                subtype: None,
             },
         );
         insert_transfer_activity(
@@ -4112,6 +4137,7 @@ mod tests {
                 source_record_id: "broker-transfer-record-in",
                 amount: "100",
                 notes: "Broker transfer in",
+                subtype: None,
             },
         );
         diesel::update(activities::table.find("broker-transfer-in"))

@@ -2,7 +2,10 @@
 mod tests {
     use crate::accounts::{Account, AccountServiceTrait, AccountUpdate, NewAccount};
     use crate::activities::activities_model::*;
-    use crate::activities::{ActivityRepositoryTrait, ActivityService, ActivityServiceTrait};
+    use crate::activities::{
+        ActivityRepositoryTrait, ActivityService, ActivityServiceTrait, ImportRun,
+        ImportRunRepositoryTrait, ImportRunStatus,
+    };
     use crate::assets::{
         normalize_quote_ccy_code, parse_crypto_pair_symbol, parse_symbol_with_exchange_suffix,
         Asset, AssetKind, AssetResolutionInput as ImportAssetResolutionInput,
@@ -1196,6 +1199,51 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct MockImportRunRepository {
+        runs: Arc<Mutex<Vec<ImportRun>>>,
+    }
+
+    #[async_trait]
+    impl ImportRunRepositoryTrait for MockImportRunRepository {
+        async fn create(&self, import_run: ImportRun) -> Result<ImportRun> {
+            self.runs.lock().unwrap().push(import_run.clone());
+            Ok(import_run)
+        }
+
+        async fn update(&self, import_run: ImportRun) -> Result<ImportRun> {
+            let mut runs = self.runs.lock().unwrap();
+            if let Some(existing) = runs.iter_mut().find(|run| run.id == import_run.id) {
+                *existing = import_run.clone();
+            } else {
+                runs.push(import_run.clone());
+            }
+            Ok(import_run)
+        }
+
+        fn get_by_id(&self, id: &str) -> Result<Option<ImportRun>> {
+            Ok(self
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|run| run.id == id)
+                .cloned())
+        }
+
+        fn get_recent_for_account(&self, account_id: &str, limit: i64) -> Result<Vec<ImportRun>> {
+            Ok(self
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|run| run.account_id == account_id)
+                .take(limit.max(0) as usize)
+                .cloned()
+                .collect())
+        }
+    }
+
     fn parse_test_activity_datetime(activity_date: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(activity_date)
             .map(|dt| dt.with_timezone(&Utc))
@@ -1486,7 +1534,7 @@ mod tests {
                     source_record_id: None,
                     source_group_id: new_activity.source_group_id,
                     idempotency_key: new_activity.idempotency_key,
-                    import_run_id: None,
+                    import_run_id: new_activity.import_run_id,
                     is_user_modified: false,
                     needs_review: false,
                     created_at: Utc::now(),
@@ -2134,6 +2182,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             })
             .await
             .expect("security transfer should be created");
@@ -2318,6 +2367,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -2371,6 +2421,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -2512,6 +2563,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let err = activity_service
@@ -2615,6 +2667,7 @@ mod tests {
                     source_record_id: Some("card-buy".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -2688,6 +2741,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         // Execute
@@ -2760,6 +2814,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         // Execute
@@ -2823,6 +2878,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         activity_service
@@ -2884,6 +2940,7 @@ mod tests {
             source_record_id: Some("provider-1".to_string()),
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let mut provider_activity_two = provider_activity_one.clone();
@@ -2943,6 +3000,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             }],
             updates: vec![],
             delete_ids: vec![],
@@ -3269,6 +3327,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         // Execute
@@ -3345,6 +3404,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -3411,6 +3471,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -3470,6 +3531,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -3520,6 +3582,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -3581,6 +3644,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             })
             .await
             .expect("lowercase subtype should save");
@@ -3638,6 +3702,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             })
             .await
             .expect("negative provider-style signs should normalize before validation");
@@ -3692,6 +3757,7 @@ mod tests {
                     source_record_id: Some("option-buy".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -3747,6 +3813,7 @@ mod tests {
                     source_record_id: Some("staking-cash-only".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -3808,6 +3875,7 @@ mod tests {
                     source_record_id: Some("staking-invalid-symbol".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -3865,6 +3933,7 @@ mod tests {
                     source_record_id: Some("interest-drip-label".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -3919,6 +3988,7 @@ mod tests {
                     source_record_id: Some("credit-staking-label".to_string()),
                     source_group_id: None,
                     idempotency_key: None,
+                    import_run_id: None,
                 }],
                 &account,
             )
@@ -3982,6 +4052,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             }],
             updates: vec![],
             delete_ids: vec![],
@@ -4058,6 +4129,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4229,6 +4301,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let error = activity_service
@@ -4296,6 +4369,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let created = activity_service
@@ -4356,6 +4430,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let error = activity_service
@@ -4411,6 +4486,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4464,6 +4540,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4517,6 +4594,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4580,6 +4658,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4647,6 +4726,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4717,6 +4797,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4785,6 +4866,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -4850,6 +4932,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             };
 
             let result = activity_service.create_activity(new_activity).await;
@@ -4921,6 +5004,7 @@ mod tests {
                 source_record_id: None,
                 source_group_id: None,
                 idempotency_key: None,
+                import_run_id: None,
             }],
             updates: vec![],
             delete_ids: vec![],
@@ -7352,6 +7436,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_import_stamps_inserted_activities_with_import_run_id() {
+        let account_service = Arc::new(MockAccountService::new());
+        let asset_service = Arc::new(MockAssetService::new());
+        let fx_service = Arc::new(MockFxService::new());
+        let activity_repository = Arc::new(MockActivityRepository::new());
+        let import_run_repository = Arc::new(MockImportRunRepository::default());
+
+        let account = create_test_account("acc-1", "USD");
+        account_service.add_account(account);
+
+        let quote_service = Arc::new(MockQuoteService);
+        let activity_service = ActivityService::with_import_run_repository(
+            activity_repository.clone(),
+            account_service,
+            asset_service,
+            fx_service,
+            quote_service,
+            import_run_repository.clone(),
+        );
+
+        let activity = ActivityImport {
+            id: None,
+            date: "2026-01-07".to_string(),
+            symbol: String::new(),
+            activity_type: "DEPOSIT".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".to_string(),
+            fee: Some(dec!(0)),
+            amount: Some(dec!(100)),
+            comment: None,
+            account_id: Some("acc-1".to_string()),
+            account_name: None,
+            symbol_name: None,
+            exchange_mic: None,
+            quote_ccy: None,
+            instrument_type: None,
+            quote_mode: None,
+            provider_id: None,
+            provider_symbol: None,
+            errors: None,
+            warnings: None,
+            duplicate_of_id: None,
+            duplicate_of_line_number: None,
+            is_draft: false,
+            is_valid: true,
+            line_number: Some(1),
+            fx_rate: None,
+            subtype: None,
+            asset_id: None,
+            isin: None,
+            force_import: false,
+            is_external: None,
+        };
+
+        let result = activity_service
+            .import_activities(vec![activity])
+            .await
+            .expect("cash import should succeed");
+
+        let stored = activity_repository
+            .get_activities()
+            .expect("stored activities should be readable");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].import_run_id.as_deref(),
+            Some(result.import_run_id.as_str())
+        );
+
+        let import_run = import_run_repository
+            .get_by_id(&result.import_run_id)
+            .expect("import run lookup should succeed")
+            .expect("import run should be stored");
+        assert_eq!(import_run.status, ImportRunStatus::Applied);
+    }
+
+    #[tokio::test]
     async fn test_import_links_transfer_pairs_using_offset_local_date_and_clears_external_metadata()
     {
         let account_service = Arc::new(MockAccountService::new());
@@ -7496,7 +7657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_import_does_not_auto_link_transfer_pairs_with_same_account() {
+    async fn test_import_does_not_auto_link_same_account_same_currency_transfer_pairs() {
         let account_service = Arc::new(MockAccountService::new());
         let asset_service = Arc::new(MockAssetService::new());
         let fx_service = Arc::new(MockFxService::new());
@@ -7611,6 +7772,243 @@ mod tests {
                     .and_then(|value| value.as_bool()),
                 Some(true),
                 "unlinked same-account leg should keep its external flag"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_import_auto_links_same_account_cash_fx_transfer_pairs() {
+        let account_service = Arc::new(MockAccountService::new());
+        let asset_service = Arc::new(MockAssetService::new());
+        let fx_service = Arc::new(MockFxService::new());
+        let activity_repository = Arc::new(MockActivityRepository::new());
+
+        let account = create_test_account("acc-1", "CAD");
+        account_service.add_account(account);
+
+        let quote_service = Arc::new(MockQuoteService);
+        let activity_service = ActivityService::new(
+            activity_repository.clone(),
+            account_service,
+            asset_service,
+            fx_service,
+            quote_service,
+        );
+
+        let transfer_in = ActivityImport {
+            id: None,
+            date: "2026-01-07".to_string(),
+            symbol: String::new(),
+            activity_type: "TRANSFER_IN".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "CAD".to_string(),
+            fee: Some(dec!(0)),
+            amount: Some(dec!(32.93)),
+            comment: Some("FxExchange".to_string()),
+            account_id: Some("acc-1".to_string()),
+            account_name: None,
+            symbol_name: None,
+            exchange_mic: None,
+            quote_ccy: None,
+            instrument_type: None,
+            quote_mode: None,
+            provider_id: None,
+            provider_symbol: None,
+            errors: None,
+            warnings: None,
+            duplicate_of_id: None,
+            duplicate_of_line_number: None,
+            is_draft: false,
+            is_valid: true,
+            line_number: Some(1),
+            fx_rate: None,
+            subtype: Some("FXEXCHANGE".to_string()),
+            asset_id: None,
+            isin: None,
+            force_import: false,
+            is_external: Some(false),
+        };
+
+        let transfer_out = ActivityImport {
+            id: None,
+            date: "2026-01-07".to_string(),
+            symbol: String::new(),
+            activity_type: "TRANSFER_OUT".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".to_string(),
+            fee: Some(dec!(0)),
+            amount: Some(dec!(24.33)),
+            comment: Some("FxExchange".to_string()),
+            account_id: Some("acc-1".to_string()),
+            account_name: None,
+            symbol_name: None,
+            exchange_mic: None,
+            quote_ccy: None,
+            instrument_type: None,
+            quote_mode: None,
+            provider_id: None,
+            provider_symbol: None,
+            errors: None,
+            warnings: None,
+            duplicate_of_id: None,
+            duplicate_of_line_number: None,
+            is_draft: false,
+            is_valid: true,
+            line_number: Some(2),
+            fx_rate: None,
+            subtype: Some("FXEXCHANGE".to_string()),
+            asset_id: None,
+            isin: None,
+            force_import: false,
+            is_external: Some(false),
+        };
+
+        let result = activity_service
+            .import_activities(vec![transfer_in, transfer_out])
+            .await
+            .expect("same-account FX import should succeed");
+
+        assert!(result.summary.success);
+        assert_eq!(result.summary.imported, 2);
+
+        let stored = activity_repository
+            .get_activities()
+            .expect("stored activities should be readable");
+        assert_eq!(stored.len(), 2);
+
+        let transfer_out_stored = stored
+            .iter()
+            .find(|activity| activity.activity_type == "TRANSFER_OUT")
+            .expect("TRANSFER_OUT should exist");
+        let transfer_in_stored = stored
+            .iter()
+            .find(|activity| activity.activity_type == "TRANSFER_IN")
+            .expect("TRANSFER_IN should exist");
+
+        assert!(transfer_out_stored.source_group_id.is_some());
+        assert_eq!(
+            transfer_out_stored.source_group_id,
+            transfer_in_stored.source_group_id
+        );
+        assert!(transfer_in_stored.fx_rate.is_none());
+        assert!(transfer_out_stored.fx_rate.is_none());
+
+        for activity in [transfer_in_stored, transfer_out_stored] {
+            let metadata = activity
+                .metadata
+                .as_ref()
+                .expect("linked FX transfer should have metadata");
+            assert_eq!(
+                metadata
+                    .get("flow")
+                    .and_then(|flow| flow.get("is_external"))
+                    .and_then(|value| value.as_bool()),
+                Some(false)
+            );
+            let fx = metadata.get("fx").expect("FX metadata should be present");
+            assert_eq!(
+                fx.get("sourceCurrency").and_then(|v| v.as_str()),
+                Some("USD")
+            );
+            assert_eq!(
+                fx.get("destinationCurrency").and_then(|v| v.as_str()),
+                Some("CAD")
+            );
+            assert_eq!(
+                fx.get("sourceAmount").and_then(|v| v.as_str()),
+                Some("24.33")
+            );
+            assert_eq!(
+                fx.get("destinationAmount").and_then(|v| v.as_str()),
+                Some("32.93")
+            );
+            assert_eq!(
+                fx.get("rateSource").and_then(|v| v.as_str()),
+                Some("implied_from_import")
+            );
+            assert!(fx.get("impliedRate").and_then(|v| v.as_str()).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_import_does_not_auto_link_same_account_cash_fx_without_fx_provenance() {
+        let account_service = Arc::new(MockAccountService::new());
+        let asset_service = Arc::new(MockAssetService::new());
+        let fx_service = Arc::new(MockFxService::new());
+        let activity_repository = Arc::new(MockActivityRepository::new());
+
+        let account = create_test_account("acc-1", "CAD");
+        account_service.add_account(account);
+
+        let quote_service = Arc::new(MockQuoteService);
+        let activity_service = ActivityService::new(
+            activity_repository.clone(),
+            account_service,
+            asset_service,
+            fx_service,
+            quote_service,
+        );
+
+        let cash_transfer = |activity_type: &str, currency: &str, amount: Decimal| ActivityImport {
+            id: None,
+            date: "2026-01-07".to_string(),
+            symbol: String::new(),
+            activity_type: activity_type.to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: currency.to_string(),
+            fee: Some(dec!(0)),
+            amount: Some(amount),
+            comment: None,
+            account_id: Some("acc-1".to_string()),
+            account_name: None,
+            symbol_name: None,
+            exchange_mic: None,
+            quote_ccy: None,
+            instrument_type: None,
+            quote_mode: None,
+            provider_id: None,
+            provider_symbol: None,
+            errors: None,
+            warnings: None,
+            duplicate_of_id: None,
+            duplicate_of_line_number: None,
+            is_draft: false,
+            is_valid: true,
+            line_number: None,
+            fx_rate: None,
+            subtype: None,
+            asset_id: None,
+            isin: None,
+            force_import: false,
+            is_external: Some(false),
+        };
+
+        let result = activity_service
+            .import_activities(vec![
+                cash_transfer("TRANSFER_IN", "CAD", dec!(32.93)),
+                cash_transfer("TRANSFER_OUT", "USD", dec!(24.33)),
+            ])
+            .await
+            .expect("same-account cash transfer import should succeed");
+
+        assert!(result.summary.success);
+        assert_eq!(result.summary.imported, 2);
+
+        let stored = activity_repository
+            .get_activities()
+            .expect("stored activities should be readable");
+        assert_eq!(stored.len(), 2);
+        for activity in stored {
+            assert!(
+                activity.source_group_id.is_none(),
+                "same-account different-currency cash transfers without FX provenance should not be auto-linked"
+            );
+            assert!(
+                activity.metadata.is_none(),
+                "unlinked internal rows should not gain generated FX metadata"
             );
         }
     }
@@ -9159,6 +9557,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -9248,6 +9647,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -9310,6 +9710,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -9372,6 +9773,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
@@ -9967,6 +10369,7 @@ mod tests {
             source_record_id: None,
             source_group_id: None,
             idempotency_key: None,
+            import_run_id: None,
         };
 
         let result = activity_service.create_activity(new_activity).await;
