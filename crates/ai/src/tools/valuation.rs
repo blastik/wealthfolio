@@ -330,6 +330,7 @@ mod tests {
             provider_account_id: None,
             is_archived: false,
             tracking_mode: TrackingMode::Transactions,
+            asset_class_override: None,
         }
     }
 
