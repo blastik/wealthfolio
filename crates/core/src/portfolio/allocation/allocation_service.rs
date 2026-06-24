@@ -189,8 +189,32 @@ impl AllocationService {
             } else {
                 &holding.source_account_ids
             };
-            let override_id = if taxonomy_id == "asset_classes" {
-                source_ids.iter().find_map(|id| cash_overrides.get(id))
+            let override_id = if taxonomy_id == "asset_classes" && !cash_overrides.is_empty() {
+                let mut unique_override: Option<&String> = None;
+                let mut all_agree = true;
+                for id in source_ids {
+                    match cash_overrides.get(id) {
+                        Some(ov) => match unique_override {
+                            None => unique_override = Some(ov),
+                            Some(prev) if prev != ov => {
+                                all_agree = false;
+                                break;
+                            }
+                            _ => {}
+                        },
+                        None => {
+                            if unique_override.is_some() {
+                                all_agree = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if all_agree {
+                    unique_override
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -1959,5 +1983,230 @@ mod tests {
 
         assert_eq!(small_cap.value, dec!(1000));
         assert_eq!(small_cap.percentage, dec!(100));
+    }
+
+    // ── Cash allocation override tests ─────────────────────────────────────
+
+    fn make_cash_holding_for_account(
+        currency: &str,
+        base_value: Decimal,
+        account_id: &str,
+    ) -> Holding {
+        Holding {
+            account_id: account_id.to_string(),
+            ..make_cash_holding(currency, base_value)
+        }
+    }
+
+    fn make_merged_cash_holding(
+        currency: &str,
+        base_value: Decimal,
+        source_account_ids: Vec<&str>,
+    ) -> Holding {
+        Holding {
+            id: format!("AGG-CASH-{currency}"),
+            account_id: "aggregated".to_string(),
+            source_account_ids: source_account_ids.into_iter().map(String::from).collect(),
+            ..make_cash_holding(currency, base_value)
+        }
+    }
+
+    #[test]
+    fn cash_override_maps_to_fixed_income_in_asset_classes() {
+        let svc = svc();
+        let holdings = vec![
+            make_holding("AAPL", dec!(5000)),
+            make_cash_holding_for_account("USD", dec!(5000), "savings"),
+        ];
+        let categories = vec![
+            make_category("EQUITY", None),
+            make_category("FIXED_INCOME", None),
+            make_category("CASH", None),
+            make_category("CASH_BANK_DEPOSITS", Some("CASH")),
+        ];
+        let overrides = HashMap::from([("savings".to_string(), "FIXED_INCOME".to_string())]);
+
+        let result = svc.aggregate_by_taxonomy(
+            &holdings,
+            "asset_classes",
+            "Asset Classes",
+            "#ccc",
+            &categories,
+            &HashMap::from([(
+                "AAPL".to_string(),
+                vec![make_assignment("AAPL", "asset_classes", "EQUITY", 10000)],
+            )]),
+            dec!(10000),
+            true,
+            &overrides,
+        );
+
+        let fi = result
+            .categories
+            .iter()
+            .find(|c| c.category_id == "FIXED_INCOME");
+        assert!(fi.is_some(), "FIXED_INCOME category should exist");
+        assert_eq!(fi.unwrap().value, dec!(5000));
+
+        let cash = result.categories.iter().find(|c| c.category_id == "CASH");
+        assert!(
+            cash.is_none(),
+            "CASH category should not exist when all cash is overridden"
+        );
+    }
+
+    #[test]
+    fn cash_override_does_not_affect_instrument_type() {
+        let svc = svc();
+        let holdings = vec![make_cash_holding_for_account("USD", dec!(5000), "savings")];
+        let categories = vec![
+            make_category("CASH_FX", None),
+            make_category("CASH", Some("CASH_FX")),
+        ];
+        let overrides = HashMap::from([("savings".to_string(), "FIXED_INCOME".to_string())]);
+
+        let result = svc.aggregate_by_taxonomy(
+            &holdings,
+            "instrument_type",
+            "Instrument Type",
+            "#ccc",
+            &categories,
+            &HashMap::new(),
+            dec!(5000),
+            true,
+            &overrides,
+        );
+
+        let cash_fx = result
+            .categories
+            .iter()
+            .find(|c| c.category_id == "CASH_FX");
+        assert!(
+            cash_fx.is_some(),
+            "instrument_type should still show CASH_FX"
+        );
+        assert_eq!(cash_fx.unwrap().value, dec!(5000));
+
+        let fi = result
+            .categories
+            .iter()
+            .find(|c| c.category_id == "FIXED_INCOME");
+        assert!(
+            fi.is_none(),
+            "FIXED_INCOME should not appear in instrument_type"
+        );
+    }
+
+    #[test]
+    fn default_cash_behavior_unchanged_without_override() {
+        let svc = svc();
+        let holdings = vec![
+            make_holding("AAPL", dec!(8000)),
+            make_cash_holding("USD", dec!(2000)),
+        ];
+        let categories = vec![
+            make_category("EQUITY", None),
+            make_category("CASH", None),
+            make_category("CASH_BANK_DEPOSITS", Some("CASH")),
+        ];
+
+        let result = svc.aggregate_by_taxonomy(
+            &holdings,
+            "asset_classes",
+            "Asset Classes",
+            "#ccc",
+            &categories,
+            &HashMap::from([(
+                "AAPL".to_string(),
+                vec![make_assignment("AAPL", "asset_classes", "EQUITY", 10000)],
+            )]),
+            dec!(10000),
+            true,
+            &HashMap::new(),
+        );
+
+        let cash = result.categories.iter().find(|c| c.category_id == "CASH");
+        assert!(cash.is_some(), "CASH should exist with default behavior");
+        assert_eq!(cash.unwrap().value, dec!(2000));
+    }
+
+    #[test]
+    fn mixed_source_accounts_fall_back_to_default() {
+        let svc = svc();
+        let holdings = vec![make_merged_cash_holding(
+            "USD",
+            dec!(10000),
+            vec!["savings", "checking"],
+        )];
+        let categories = vec![
+            make_category("FIXED_INCOME", None),
+            make_category("CASH", None),
+            make_category("CASH_BANK_DEPOSITS", Some("CASH")),
+        ];
+        // savings has override, checking does not → mixed → should fall back to CASH
+        let overrides = HashMap::from([("savings".to_string(), "FIXED_INCOME".to_string())]);
+
+        let result = svc.aggregate_by_taxonomy(
+            &holdings,
+            "asset_classes",
+            "Asset Classes",
+            "#ccc",
+            &categories,
+            &HashMap::new(),
+            dec!(10000),
+            true,
+            &overrides,
+        );
+
+        let cash = result.categories.iter().find(|c| c.category_id == "CASH");
+        assert!(cash.is_some(), "mixed sources should fall back to CASH");
+        assert_eq!(cash.unwrap().value, dec!(10000));
+
+        let fi = result
+            .categories
+            .iter()
+            .find(|c| c.category_id == "FIXED_INCOME");
+        assert!(
+            fi.is_none(),
+            "FIXED_INCOME should not appear with mixed sources"
+        );
+    }
+
+    #[test]
+    fn all_sources_same_override_applies() {
+        let svc = svc();
+        let holdings = vec![make_merged_cash_holding(
+            "USD",
+            dec!(10000),
+            vec!["sav1", "sav2"],
+        )];
+        let categories = vec![
+            make_category("FIXED_INCOME", None),
+            make_category("CASH", None),
+            make_category("CASH_BANK_DEPOSITS", Some("CASH")),
+        ];
+        let overrides = HashMap::from([
+            ("sav1".to_string(), "FIXED_INCOME".to_string()),
+            ("sav2".to_string(), "FIXED_INCOME".to_string()),
+        ]);
+
+        let result = svc.aggregate_by_taxonomy(
+            &holdings,
+            "asset_classes",
+            "Asset Classes",
+            "#ccc",
+            &categories,
+            &HashMap::new(),
+            dec!(10000),
+            true,
+            &overrides,
+        );
+
+        let fi = result
+            .categories
+            .iter()
+            .find(|c| c.category_id == "FIXED_INCOME");
+        assert!(fi.is_some(), "all sources agree → FIXED_INCOME");
+        assert_eq!(fi.unwrap().value, dec!(10000));
     }
 }
