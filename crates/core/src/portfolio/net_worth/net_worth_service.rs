@@ -379,7 +379,6 @@ impl NetWorthServiceTrait for NetWorthService {
             .collect();
 
         let mut valuations: Vec<ValuationInfo> = Vec::new();
-        let mut account_position_asset_ids: HashSet<String> = HashSet::new();
 
         // Process each account's snapshot
         for (account_id, snapshot) in &snapshots {
@@ -398,13 +397,6 @@ impl NetWorthServiceTrait for NetWorthService {
             } else {
                 stored_valuations_by_account.get(account_id)
             };
-            if !is_liability_account {
-                for (asset_id, position) in &snapshot.positions {
-                    if !position.quantity.is_zero() {
-                        account_position_asset_ids.insert(asset_id.clone());
-                    }
-                }
-            }
 
             if let Some(account_valuation) = stored_account_valuation {
                 if !account_valuation.investment_market_value_base.is_zero() {
@@ -617,9 +609,7 @@ impl NetWorthServiceTrait for NetWorthService {
         for asset in alternative_assets {
             // Skip if this asset was already processed via a snapshot position
             // (in case there's overlap)
-            if account_position_asset_ids.contains(&asset.id)
-                || valuations.iter().any(|v| v.asset_id == asset.id)
-            {
+            if valuations.iter().any(|v| v.asset_id == asset.id) {
                 continue;
             }
 

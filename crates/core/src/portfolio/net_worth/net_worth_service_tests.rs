@@ -1141,7 +1141,7 @@ async fn test_single_investment_account() {
 }
 
 #[tokio::test]
-async fn test_net_worth_uses_stored_investment_valuation_when_available() {
+async fn test_net_worth_uses_stored_investment_valuation_and_keeps_alternatives() {
     let date = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
     let account = create_test_account("account-1", "SECURITIES", "USD");
     let asset = create_test_asset("NFLX", AssetKind::Investment, "USD");
@@ -1166,10 +1166,10 @@ async fn test_net_worth_uses_stored_investment_valuation_when_available() {
 
     let result = service.get_net_worth(date).await.unwrap();
 
-    assert_eq!(result.net_worth, dec!(20000));
-    assert_eq!(result.assets.total, dec!(20000));
+    assert_eq!(result.net_worth, dec!(25000));
+    assert_eq!(result.assets.total, dec!(25000));
     assert_eq!(get_category_value(&result, "investments"), dec!(20000));
-    assert_eq!(get_category_value(&result, "properties"), Decimal::ZERO);
+    assert_eq!(get_category_value(&result, "properties"), dec!(5000));
 }
 
 #[tokio::test]
