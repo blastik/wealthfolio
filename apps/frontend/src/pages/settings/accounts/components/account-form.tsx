@@ -46,6 +46,34 @@ import { Input } from "@wealthfolio/ui/components/ui/input";
 
 import { useAccountMutations } from "./use-account-mutations";
 
+function getCashCategoryFromMeta(meta?: string | null): string | null {
+  if (!meta) return null;
+  try {
+    const parsed = JSON.parse(meta) as Record<string, unknown>;
+    const allocation = parsed.allocation as Record<string, unknown> | undefined;
+    return (allocation?.cashCategoryId as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function setCashCategoryInMeta(meta: string | null | undefined, categoryId: string | null): string {
+  let parsed: Record<string, unknown> = {};
+  if (meta) {
+    try {
+      parsed = JSON.parse(meta) as Record<string, unknown>;
+    } catch {
+      // ignore
+    }
+  }
+  if (categoryId) {
+    parsed.allocation = { cashCategoryId: categoryId };
+  } else {
+    delete parsed.allocation;
+  }
+  return JSON.stringify(parsed);
+}
+
 const accountTypes: ResponsiveSelectOption[] = [
   { label: "Securities", value: "SECURITIES" },
   { label: "Cash", value: "CASH" },
@@ -334,27 +362,22 @@ export function AccountForm({ defaultValues, onSuccess = () => undefined }: Acco
           />
 
           {isCashAccount && (
-            <FormField
-              control={form.control}
-              name="assetClassOverride"
-              render={({ field }) => (
-                <FormItem className="flex flex-col">
-                  <FormLabel>Allocation category</FormLabel>
-                  <FormControl>
-                    <ResponsiveSelect
-                      value={field.value ?? "__default__"}
-                      onValueChange={(v) => field.onChange(v === "__default__" ? null : v)}
-                      options={assetClassOptions}
-                      placeholder="Cash (default)"
-                      sheetTitle="Allocation Category"
-                      sheetDescription="Override how this account appears in allocation charts."
-                      triggerClassName="h-11"
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">Allocation category</label>
+              <ResponsiveSelect
+                value={getCashCategoryFromMeta(form.watch("meta")) ?? "__default__"}
+                onValueChange={(v) => {
+                  const categoryId = v === "__default__" ? null : v;
+                  const updatedMeta = setCashCategoryInMeta(form.getValues("meta"), categoryId);
+                  form.setValue("meta", updatedMeta, { shouldDirty: true });
+                }}
+                options={assetClassOptions}
+                placeholder="Cash (default)"
+                sheetTitle="Allocation Category"
+                sheetDescription="Override how this account appears in allocation charts."
+                triggerClassName="h-11"
+              />
+            </div>
           )}
 
           <FormField

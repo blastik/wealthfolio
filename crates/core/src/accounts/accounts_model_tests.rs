@@ -88,7 +88,6 @@ mod tests {
             provider_account_id: None,
             is_archived: false,
             tracking_mode: TrackingMode::Holdings,
-            asset_class_override: None,
         };
 
         let err = account
@@ -119,7 +118,6 @@ mod tests {
             provider_account_id: None,
             is_archived: false,
             tracking_mode,
-            asset_class_override: None,
         }
     }
 }

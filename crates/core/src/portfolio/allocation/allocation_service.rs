@@ -107,7 +107,7 @@ impl AllocationService {
         };
         accounts
             .into_iter()
-            .filter_map(|a| a.asset_class_override.map(|ov| (a.id, ov)))
+            .filter_map(|a| a.cash_allocation_category_id().map(|ov| (a.id, ov)))
             .collect()
     }
 
@@ -189,7 +189,11 @@ impl AllocationService {
             } else {
                 &holding.source_account_ids
             };
-            let override_id = source_ids.iter().find_map(|id| cash_overrides.get(id));
+            let override_id = if taxonomy_id == "asset_classes" {
+                source_ids.iter().find_map(|id| cash_overrides.get(id))
+            } else {
+                None
+            };
             let resolved_category_id = if let Some(ov) = override_id {
                 ov.as_str()
             } else {

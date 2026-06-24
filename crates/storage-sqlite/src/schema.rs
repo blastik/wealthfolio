@@ -18,7 +18,6 @@ diesel::table! {
         provider_account_id -> Nullable<Text>,
         is_archived -> Bool,
         tracking_mode -> Text,
-        asset_class_override -> Nullable<Text>,
     }
 }
 

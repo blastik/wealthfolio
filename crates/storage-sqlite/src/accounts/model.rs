@@ -48,7 +48,6 @@ pub struct AccountDB {
     pub provider_account_id: Option<String>,
     pub is_archived: bool,
     pub tracking_mode: String,
-    pub asset_class_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -200,7 +199,6 @@ impl From<AccountDB> for Account {
             provider_account_id: db.provider_account_id,
             is_archived: db.is_archived,
             tracking_mode,
-            asset_class_override: db.asset_class_override,
         }
     }
 }
@@ -231,7 +229,6 @@ impl From<NewAccount> for AccountDB {
             provider_account_id: domain.provider_account_id,
             is_archived: domain.is_archived,
             tracking_mode,
-            asset_class_override: domain.asset_class_override,
         }
     }
 }
@@ -264,7 +261,6 @@ impl From<AccountUpdate> for AccountDB {
             provider_account_id: domain.provider_account_id,
             is_archived: domain.is_archived.unwrap_or(false),
             tracking_mode,
-            asset_class_override: domain.asset_class_override,
         }
     }
 }
