@@ -33,6 +33,7 @@ import { canAddHoldings, getActivityRestrictionLevel } from "@/lib/activity-rest
 import {
   AccountPurpose,
   AccountType,
+  type ActivityType,
   accountSupportsPurpose,
   HoldingType,
   isLiabilityAccountType,
@@ -59,15 +60,18 @@ import { cn } from "@/lib/utils";
 import { ActivityDateSheet } from "@/pages/activity/components/activity-date-sheet";
 import { ActivityDeleteModal } from "@/pages/activity/components/activity-delete-modal";
 import { ActivityForm, type AccountSelectOption } from "@/pages/activity/components/activity-form";
+import { ActivityPagination } from "@/pages/activity/components/activity-pagination";
 import ActivityTable from "@/pages/activity/components/activity-table/activity-table";
 import ActivityTableMobile from "@/pages/activity/components/activity-table/activity-table-mobile";
 import { BulkHoldingsModal } from "@/pages/activity/components/forms/bulk-holdings-modal";
 import { MobileActivityForm } from "@/pages/activity/components/mobile-forms/mobile-activity-form";
 import { useActivityActionDialogs } from "@/pages/activity/hooks/use-activity-action-dialogs";
+import { useActivitySearch } from "@/pages/activity/hooks/use-activity-search";
 import { PortfolioUpdateTrigger } from "@/pages/dashboard/portfolio-update-trigger";
 import { HoldingsEditMode } from "@/pages/holdings/components/holdings-edit-mode";
 import { useCalculatePerformanceHistory } from "@/pages/performance/hooks/use-performance-data";
 import { useQuery } from "@tanstack/react-query";
+import type { SortingState } from "@tanstack/react-table";
 import { Icons, type Icon } from "@wealthfolio/ui";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import {
@@ -127,31 +131,8 @@ const getInitialDateRange = (): DateRange => ({
 // Define the initial interval code (consistent with other pages)
 const INITIAL_INTERVAL_CODE: TimePeriod = "3M";
 const CASH_AUDIT_ACTIVITY_PAGE_SIZE = 500;
-const ACCOUNT_ACTIVITY_PAGE_SIZE = 500;
-
-async function getAccountActivities(accountId: string): Promise<ActivityDetails[]> {
-  const activities: ActivityDetails[] = [];
-  let page = 0;
-  let totalRowCount = Number.POSITIVE_INFINITY;
-
-  while (activities.length < totalRowCount) {
-    const response = await searchActivities(
-      page,
-      ACCOUNT_ACTIVITY_PAGE_SIZE,
-      { accountIds: [accountId] },
-      "",
-      { id: "date", desc: true },
-    );
-
-    activities.push(...response.data);
-    totalRowCount = response.meta.totalRowCount;
-
-    if (response.data.length < ACCOUNT_ACTIVITY_PAGE_SIZE) break;
-    page += 1;
-  }
-
-  return activities;
-}
+const EMPTY_ACCOUNT_IDS: string[] = [];
+const EMPTY_ACTIVITY_TYPES: ActivityType[] = [];
 
 async function getCashAuditActivities(
   accountId: string,
@@ -201,6 +182,9 @@ const AccountPage = () => {
   const [isActivitySheetOpen, setIsActivitySheetOpen] = useState(false);
   const [showBulkHoldingsForm, setShowBulkHoldingsForm] = useState(false);
   const [accountDetailTab, setAccountDetailTab] = useState<AccountDetailTab>("holdings");
+  const [accountActivitiesSorting, setAccountActivitiesSorting] = useState<SortingState>([
+    { id: "date", desc: true },
+  ]);
   const {
     selectedActivity,
     formOpen: activityFormOpen,
@@ -292,13 +276,19 @@ const AccountPage = () => {
     ? accountDetailTab
     : (accountDetailTabs[0]?.value ?? "activities");
 
-  const { data: accountActivities = [], isLoading: isAccountActivitiesLoading } = useQuery<
-    ActivityDetails[],
-    Error
-  >({
-    queryKey: [QueryKeys.ACTIVITIES, "byAccount", id],
-    queryFn: () => getAccountActivities(id),
-    enabled: !!account,
+  const isAccountActivitiesTabActive = activeAccountDetailTab === "activities";
+  const accountActivityAccountIds = useMemo(
+    () => (isAccountActivitiesTabActive && account ? [id] : EMPTY_ACCOUNT_IDS),
+    [account, id, isAccountActivitiesTabActive],
+  );
+  const accountActivitiesSearch = useActivitySearch({
+    mode: "infinite",
+    filters: {
+      accountIds: accountActivityAccountIds,
+      activityTypes: EMPTY_ACTIVITY_TYPES,
+    },
+    searchQuery: "",
+    sorting: accountActivitiesSorting,
   });
 
   const activityFormAccounts = useMemo<AccountSelectOption[]>(
@@ -614,24 +604,43 @@ const AccountPage = () => {
   };
 
   const accountActivitiesContent = isMobile ? (
-    <ActivityTableMobile
-      activities={accountActivities}
-      isCompactView={true}
-      handleEdit={handleActivityEdit}
-      handleDelete={handleActivityDelete}
-      onDuplicate={handleActivityDuplicate}
-      onAdd={() => navigate(`/activities/manage?account=${id}`)}
-    />
+    <>
+      <ActivityTableMobile
+        activities={accountActivitiesSearch.data}
+        isLoading={accountActivitiesSearch.isLoading}
+        isCompactView={true}
+        handleEdit={handleActivityEdit}
+        handleDelete={handleActivityDelete}
+        onDuplicate={handleActivityDuplicate}
+        onAdd={() => navigate(`/activities/manage?account=${id}`)}
+      />
+      <ActivityPagination
+        hasMore={accountActivitiesSearch.hasNextPage ?? false}
+        onLoadMore={accountActivitiesSearch.fetchNextPage}
+        isFetching={accountActivitiesSearch.isFetchingNextPage}
+        totalFetched={accountActivitiesSearch.data.length}
+        totalCount={accountActivitiesSearch.totalRowCount}
+      />
+    </>
   ) : (
-    <ActivityTable
-      activities={accountActivities}
-      isLoading={isAccountActivitiesLoading}
-      sorting={[{ id: "date", desc: true }]}
-      onSortingChange={() => undefined}
-      handleEdit={handleActivityEdit}
-      handleDelete={handleActivityDelete}
-      onAdd={() => navigate(`/activities/manage?account=${id}`)}
-    />
+    <>
+      <ActivityTable
+        activities={accountActivitiesSearch.data}
+        isLoading={accountActivitiesSearch.isLoading}
+        sorting={accountActivitiesSorting}
+        onSortingChange={setAccountActivitiesSorting}
+        handleEdit={handleActivityEdit}
+        handleDelete={handleActivityDelete}
+        onAdd={() => navigate(`/activities/manage?account=${id}`)}
+      />
+      <ActivityPagination
+        hasMore={accountActivitiesSearch.hasNextPage ?? false}
+        onLoadMore={accountActivitiesSearch.fetchNextPage}
+        isFetching={accountActivitiesSearch.isFetchingNextPage}
+        totalFetched={accountActivitiesSearch.data.length}
+        totalCount={accountActivitiesSearch.totalRowCount}
+      />
+    </>
   );
 
   const accountDetailsContent = (

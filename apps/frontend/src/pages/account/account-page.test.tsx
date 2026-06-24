@@ -17,6 +17,7 @@ import type {
   Settings,
 } from "@/lib/types";
 import { AccountType } from "@/lib/types";
+import { useActivitySearch } from "@/pages/activity/hooks/use-activity-search";
 import { useCalculatePerformanceHistory } from "@/pages/performance/hooks/use-performance-data";
 import AccountPage from "./account-page";
 
@@ -75,6 +76,10 @@ vi.mock("@/pages/activity/components/activity-form", () => ({
   ActivityForm: () => <div>activity-form</div>,
 }));
 
+vi.mock("@/pages/activity/components/activity-pagination", () => ({
+  ActivityPagination: () => <div>activity-pagination</div>,
+}));
+
 vi.mock("@/pages/activity/components/activity-table/activity-table", () => ({
   default: () => <div>activity-table</div>,
 }));
@@ -104,6 +109,20 @@ vi.mock("@/pages/activity/hooks/use-activity-action-dialogs", () => ({
     confirmDelete: vi.fn(),
     duplicateActivity: vi.fn(),
   }),
+}));
+
+vi.mock("@/pages/activity/hooks/use-activity-search", () => ({
+  useActivitySearch: vi.fn(() => ({
+    mode: "infinite",
+    data: [],
+    totalRowCount: 0,
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetching: false,
+    isFetchingNextPage: false,
+    isLoading: false,
+    refetch: vi.fn(),
+  })),
 }));
 
 vi.mock("@/pages/dashboard/portfolio-update-trigger", () => ({
@@ -276,6 +295,7 @@ const mockUseIsMobileViewport = vi.mocked(useIsMobileViewport);
 const mockUseValuationHistory = vi.mocked(useValuationHistory);
 const mockUseSettingsContext = vi.mocked(useSettingsContext);
 const mockUseCalculatePerformanceHistory = vi.mocked(useCalculatePerformanceHistory);
+const mockUseActivitySearch = vi.mocked(useActivitySearch);
 const mockUseQuery = vi.mocked(useQuery);
 const mockUseRecalculatePortfolioMutation = vi.mocked(useRecalculatePortfolioMutation);
 
@@ -424,8 +444,17 @@ describe("AccountPage", () => {
     render(<AccountPage />);
 
     expect(screen.getByText("Activities")).toBeInTheDocument();
+    expect(mockUseActivitySearch.mock.calls.at(-1)?.[0]).toMatchObject({
+      mode: "infinite",
+      filters: { accountIds: [] },
+    });
+
     fireEvent.click(screen.getByRole("button", { name: "Activities" }));
 
+    expect(mockUseActivitySearch.mock.calls.at(-1)?.[0]).toMatchObject({
+      mode: "infinite",
+      filters: { accountIds: ["account-1"] },
+    });
     expect(screen.getByRole("link", { name: /Explore activities/i })).toHaveAttribute(
       "href",
       "/activities?account=account-1",
