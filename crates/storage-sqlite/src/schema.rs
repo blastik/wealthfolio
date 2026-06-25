@@ -747,10 +747,10 @@ diesel::table! {
         min_trade_amount -> Text,
         whole_shares_only -> Integer,
         allow_sells -> Integer,
-        max_turnover_pct -> Nullable<Text>,
         created_at -> Text,
         updated_at -> Text,
         archived_at -> Nullable<Text>,
+        max_turnover_pct -> Nullable<Text>,
     }
 }
 

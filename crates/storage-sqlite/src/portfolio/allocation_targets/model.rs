@@ -20,10 +20,10 @@ pub struct AllocationTargetDB {
     pub min_trade_amount: String,
     pub whole_shares_only: i32,
     pub allow_sells: i32,
-    pub max_turnover_pct: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,
+    pub max_turnover_pct: Option<String>,
 }
 
 impl From<AllocationTarget> for AllocationTargetDB {
