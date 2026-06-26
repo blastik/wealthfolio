@@ -10,9 +10,10 @@ use wealthfolio_core::{
     accounts::AccountServiceTrait, activities::ActivityServiceTrait,
     allocation::AllocationServiceTrait, assets::AssetServiceTrait, goals::GoalServiceTrait,
     health::HealthServiceTrait, holdings::HoldingsServiceTrait, income::IncomeServiceTrait,
-    performance::PerformanceServiceTrait, quotes::QuoteServiceTrait, secrets::SecretStore,
-    settings::SettingsServiceTrait, taxonomies::TaxonomyServiceTrait,
-    valuation::ValuationServiceTrait,
+    limits::ContributionLimitServiceTrait, performance::PerformanceServiceTrait,
+    portfolio::net_worth::NetWorthServiceTrait, portfolios::PortfolioServiceTrait,
+    quotes::QuoteServiceTrait, secrets::SecretStore, settings::SettingsServiceTrait,
+    taxonomies::TaxonomyServiceTrait, valuation::ValuationServiceTrait,
 };
 use wealthfolio_spending::activity_assignments::ActivityTaxonomyAssignmentService;
 use wealthfolio_spending::cash_activities::{CashActivityService, CashActivityServiceTrait};
@@ -41,6 +42,9 @@ pub struct ServerAiEnvironment {
     income_service: Arc<dyn IncomeServiceTrait + Send + Sync>,
     health_service: Arc<dyn HealthServiceTrait + Send + Sync>,
     taxonomy_service: Arc<dyn TaxonomyServiceTrait + Send + Sync>,
+    portfolio_service: Arc<dyn PortfolioServiceTrait + Send + Sync>,
+    net_worth_service: Arc<dyn NetWorthServiceTrait + Send + Sync>,
+    contribution_limit_service: Arc<dyn ContributionLimitServiceTrait + Send + Sync>,
     cash_activity_service: Arc<CashActivityService>,
     activity_taxonomy_assignment_service: Arc<ActivityTaxonomyAssignmentService>,
     categorization_rules_service: Arc<CategorizationRulesService>,
@@ -66,6 +70,9 @@ impl ServerAiEnvironment {
         income_service: Arc<dyn IncomeServiceTrait + Send + Sync>,
         health_service: Arc<dyn HealthServiceTrait + Send + Sync>,
         taxonomy_service: Arc<dyn TaxonomyServiceTrait + Send + Sync>,
+        portfolio_service: Arc<dyn PortfolioServiceTrait + Send + Sync>,
+        net_worth_service: Arc<dyn NetWorthServiceTrait + Send + Sync>,
+        contribution_limit_service: Arc<dyn ContributionLimitServiceTrait + Send + Sync>,
         cash_activity_service: Arc<CashActivityService>,
         activity_taxonomy_assignment_service: Arc<ActivityTaxonomyAssignmentService>,
         categorization_rules_service: Arc<CategorizationRulesService>,
@@ -87,6 +94,9 @@ impl ServerAiEnvironment {
             income_service,
             health_service,
             taxonomy_service,
+            portfolio_service,
+            net_worth_service,
+            contribution_limit_service,
             cash_activity_service,
             activity_taxonomy_assignment_service,
             categorization_rules_service,
@@ -149,6 +159,18 @@ impl AgentEnvironment for ServerAiEnvironment {
 
     fn taxonomy_service(&self) -> Arc<dyn TaxonomyServiceTrait> {
         self.taxonomy_service.clone()
+    }
+
+    fn portfolio_service(&self) -> Arc<dyn PortfolioServiceTrait> {
+        self.portfolio_service.clone()
+    }
+
+    fn net_worth_service(&self) -> Arc<dyn NetWorthServiceTrait> {
+        self.net_worth_service.clone()
+    }
+
+    fn contribution_limit_service(&self) -> Arc<dyn ContributionLimitServiceTrait> {
+        self.contribution_limit_service.clone()
     }
 
     fn cash_activity_service(&self) -> Arc<dyn CashActivityServiceTrait> {

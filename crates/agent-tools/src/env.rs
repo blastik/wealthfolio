@@ -14,11 +14,13 @@ use wealthfolio_core::{
     assets::AssetServiceTrait,
     goals::GoalServiceTrait,
     health::HealthServiceTrait,
+    limits::ContributionLimitServiceTrait,
     portfolio::{
         allocation::AllocationServiceTrait, holdings::HoldingsServiceTrait,
-        income::IncomeServiceTrait, performance::PerformanceServiceTrait,
-        valuation::ValuationServiceTrait,
+        income::IncomeServiceTrait, net_worth::NetWorthServiceTrait,
+        performance::PerformanceServiceTrait, valuation::ValuationServiceTrait,
     },
+    portfolios::PortfolioServiceTrait,
     quotes::QuoteServiceTrait,
     settings::SettingsServiceTrait,
     taxonomies::TaxonomyServiceTrait,
@@ -69,6 +71,15 @@ pub trait AgentEnvironment: Send + Sync {
 
     /// Get the taxonomy service for fetching taxonomies and categories.
     fn taxonomy_service(&self) -> Arc<dyn TaxonomyServiceTrait>;
+
+    /// Get the portfolio service for reading portfolios (named account groups).
+    fn portfolio_service(&self) -> Arc<dyn PortfolioServiceTrait>;
+
+    /// Get the net-worth service for assets-minus-liabilities reads.
+    fn net_worth_service(&self) -> Arc<dyn NetWorthServiceTrait>;
+
+    /// Get the contribution-limit service for contribution-room reads.
+    fn contribution_limit_service(&self) -> Arc<dyn ContributionLimitServiceTrait>;
 
     /// Get the cash-activity service for spending-tracker reads.
     fn cash_activity_service(&self) -> Arc<dyn CashActivityServiceTrait>;

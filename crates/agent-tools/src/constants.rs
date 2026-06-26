@@ -29,3 +29,12 @@ pub const MAX_GOALS: usize = 50;
 
 /// Maximum number of accounts returned per tool call.
 pub const MAX_ACCOUNTS: usize = 50;
+
+/// Maximum number of portfolios returned per tool call.
+pub const MAX_PORTFOLIOS: usize = 50;
+
+/// Maximum number of net-worth history points returned per tool call.
+pub const MAX_NET_WORTH_POINTS: usize = 400;
+
+/// Maximum number of contribution limits returned per tool call.
+pub const MAX_CONTRIBUTION_LIMITS: usize = 50;
