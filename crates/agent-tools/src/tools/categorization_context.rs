@@ -657,7 +657,10 @@ impl AgentTool for ListCategorizationContext {
     }
 
     fn required_scopes(&self) -> &'static [AgentScope] {
-        &[AgentScope::ClassificationRead]
+        // Returns cash-activity rows (ids, amounts, currencies, notes), so it
+        // requires activities:read in addition to classification:read — a
+        // classification-only token must not read transaction data.
+        &[AgentScope::ActivitiesRead, AgentScope::ClassificationRead]
     }
 
     fn access_level(&self) -> AgentToolAccess {

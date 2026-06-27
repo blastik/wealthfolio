@@ -23,6 +23,28 @@ use crate::scope::AgentScope;
 use crate::tool::{AgentTool, AgentToolAccess, AgentToolError, AgentToolResult};
 use crate::tools::record_activity::ActivityDraft;
 
+/// Drop the draft payload(s) from audit args — never persist amounts, account
+/// ids, symbols, or notes in `mcp_audit_log`.
+fn redact_drafts(args: &serde_json::Value) -> serde_json::Value {
+    let mut value = args.clone();
+    if let Some(obj) = value.as_object_mut() {
+        if obj.contains_key("draft") {
+            obj.insert("draft".to_string(), serde_json::json!("[redacted]"));
+        }
+        if let Some(count) = obj
+            .get("drafts")
+            .and_then(|d| d.as_array())
+            .map(|a| a.len())
+        {
+            obj.insert(
+                "drafts".to_string(),
+                serde_json::json!(format!("[{count} drafts]")),
+            );
+        }
+    }
+    value
+}
+
 /// Arguments for `commit_activity_drafts`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,6 +208,10 @@ impl AgentTool for CommitActivityDraft {
         AgentToolAccess::Write
     }
 
+    fn sanitize_args_for_audit(&self, args: &serde_json::Value) -> serde_json::Value {
+        redact_drafts(args)
+    }
+
     async fn call(
         &self,
         env: Arc<dyn AgentEnvironment>,
@@ -252,6 +278,10 @@ impl AgentTool for CommitActivityDrafts {
 
     fn access_level(&self) -> AgentToolAccess {
         AgentToolAccess::Write
+    }
+
+    fn sanitize_args_for_audit(&self, args: &serde_json::Value) -> serde_json::Value {
+        redact_drafts(args)
     }
 
     async fn call(
@@ -392,6 +422,21 @@ mod tests {
             draft_to_new_activity(&draft),
             Err(AgentToolError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn audit_redaction_drops_draft_payloads() {
+        let single = serde_json::json!({ "draft": { "amount": 1502.5, "notes": "secret" } });
+        assert_eq!(
+            redact_drafts(&single)["draft"],
+            serde_json::json!("[redacted]")
+        );
+
+        let batch = serde_json::json!({ "drafts": [ { "amount": 1.0 }, { "amount": 2.0 } ] });
+        assert_eq!(
+            redact_drafts(&batch)["drafts"],
+            serde_json::json!("[2 drafts]")
+        );
     }
 }
 
