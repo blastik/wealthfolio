@@ -978,7 +978,14 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
             .snapshot_repository
             .get_latest_snapshot_before_date(&account_id, tomorrow)?;
 
-        // 4. Build positions_map using resolved asset IDs
+        // 4. Build positions_map using resolved asset IDs.
+        // Pre-sum quantities per asset so the cost-basis fallback below compares the latest
+        // snapshot against the COMBINED position rather than an individual split row. A broker
+        // that splits one holding across rows (margin/cash) and omits average_purchase_price
+        // would otherwise never match the prior quantity, skip the "quantity unchanged -> reuse
+        // prior cost" fallback, and overwrite a previously known basis with zero.
+        let combined_quantities =
+            Self::combined_quantities_by_asset(&position_data, &spec_key_to_asset_id);
         let mut positions_map: HashMap<String, Position> = HashMap::new();
         let mut total_cost_basis = Decimal::ZERO;
 
@@ -1001,12 +1008,18 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
                 .and_then(|spec| spec.option_multiplier())
                 .unwrap_or(Decimal::ONE);
 
+            // Resolve cost against the combined quantity (all split rows for this asset) so the
+            // prior-cost fallback works even when the broker splits the holding into rows.
+            let combined_quantity = combined_quantities
+                .get(&asset_id)
+                .copied()
+                .unwrap_or(position.quantity);
             let avg_cost = Self::resolve_position_average_cost(
                 position.average_cost,
                 latest
                     .as_ref()
                     .and_then(|snapshot| snapshot.positions.get(&asset_id)),
-                position.quantity,
+                combined_quantity,
                 &position.position_currency,
             );
             let position_cost_basis =
@@ -1137,6 +1150,22 @@ impl BrokerSyncService {
                 if snapshot.snapshot_date == snapshot_date
                     && snapshot.source == SnapshotSource::ManualEntry
         )
+    }
+
+    /// Sum position quantities per resolved asset. Used so the cost-basis fallback can compare
+    /// the latest snapshot against the combined position rather than an individual split row
+    /// (brokers may report one holding as several rows — e.g. margin vs. cash sub-account).
+    fn combined_quantities_by_asset(
+        position_data: &[HoldingsPositionData],
+        spec_key_to_asset_id: &HashMap<String, String>,
+    ) -> HashMap<String, Decimal> {
+        let mut totals: HashMap<String, Decimal> = HashMap::new();
+        for position in position_data {
+            if let Some(asset_id) = spec_key_to_asset_id.get(&position.spec_key) {
+                *totals.entry(asset_id.clone()).or_insert(Decimal::ZERO) += position.quantity;
+            }
+        }
+        totals
     }
 
     fn resolve_position_average_cost(
@@ -1842,5 +1871,56 @@ mod tests {
         assert_eq!(a_then_b.quantity, b_then_a.quantity);
         assert_eq!(a_then_b.total_cost_basis, b_then_a.total_cost_basis);
         assert_eq!(a_then_b.average_cost, b_then_a.average_cost);
+    }
+
+    #[test]
+    fn combined_quantities_by_asset_sums_split_rows() {
+        let row = |spec_key: &str, quantity: &str| super::HoldingsPositionData {
+            spec_key: spec_key.to_string(),
+            quantity: decimal(quantity),
+            quote_price: decimal("100"),
+            quote_currency: "USD".to_string(),
+            average_cost: None,
+            position_currency: "USD".to_string(),
+        };
+        let position_data = vec![
+            row("EQUITY:VTI", "32.005"),
+            row("EQUITY:VTI", "18.423"),
+            row("EQUITY:VXUS", "10"),
+        ];
+        let mut spec_key_to_asset_id = HashMap::new();
+        spec_key_to_asset_id.insert("EQUITY:VTI".to_string(), "asset-vti".to_string());
+        spec_key_to_asset_id.insert("EQUITY:VXUS".to_string(), "asset-vxus".to_string());
+
+        let totals =
+            BrokerSyncService::combined_quantities_by_asset(&position_data, &spec_key_to_asset_id);
+
+        assert_eq!(totals.get("asset-vti").copied(), Some(decimal("50.428")));
+        assert_eq!(totals.get("asset-vxus").copied(), Some(decimal("10")));
+    }
+
+    #[test]
+    fn resolve_position_average_cost_reuses_prior_cost_for_combined_split_quantity() {
+        // Broker omits cost and splits the holding into two rows. Resolving against the COMBINED
+        // quantity (50.428) — not a single 32.005 row — matches the prior snapshot and preserves
+        // its average cost instead of zeroing it (the regression Codex flagged).
+        let latest = position("acc-1", "vti", "50.428", "300", "15128.4", "USD");
+
+        let combined = BrokerSyncService::resolve_position_average_cost(
+            None,
+            Some(&latest),
+            decimal("50.428"),
+            "USD",
+        );
+        let single_row = BrokerSyncService::resolve_position_average_cost(
+            None,
+            Some(&latest),
+            decimal("32.005"),
+            "USD",
+        );
+
+        assert_eq!(combined, decimal("300"));
+        // The pre-fix per-row path compared 32.005 against 50.428 and lost the known basis.
+        assert_eq!(single_row, Decimal::ZERO);
     }
 }
