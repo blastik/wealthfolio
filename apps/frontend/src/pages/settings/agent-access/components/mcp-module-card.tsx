@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { Switch } from "@wealthfolio/ui/components/ui/switch";
 import { useMcpServer } from "../hooks/use-mcp-server";
 
-/** Master feature toggle for Agent Access — gates the rest of the page. */
+/** Master feature toggle for AI Agent Access — gates the rest of the page. */
 export function McpModuleCard() {
   const { status, isLoading, setEnabledMutation } = useMcpServer();
   const enabled = status?.enabled ?? false;
@@ -10,7 +10,7 @@ export function McpModuleCard() {
 
   return (
     <section
-      aria-label="Agent access status"
+      aria-label="AI Agent Access status"
       className="bg-foreground text-background relative overflow-hidden rounded-lg shadow-lg"
     >
       <div className="p-5 sm:px-7 sm:py-6">
@@ -33,9 +33,9 @@ export function McpModuleCard() {
             <span className="text-background truncate font-medium">
               {enabled
                 ? running
-                  ? "Agent access running"
-                  : "Agent access enabled"
-                : "Agent access disabled"}
+                  ? "AI Agent Access · running"
+                  : "AI Agent Access · enabled"
+                : "AI Agent Access · off"}
             </span>
           </div>
 
@@ -59,10 +59,10 @@ export function McpModuleCard() {
         <div className="mt-4 text-sm font-medium tracking-tight sm:text-base">
           {enabled
             ? "AI agents can connect over MCP using scoped access tokens. Start the server and create a token below."
-            : "Agent access is off. Enable it to let AI agents read and act on your portfolio over MCP."}
+            : "AI Agent Access is off. Enable it to let AI agents read and act on your portfolio over MCP."}
         </div>
         <div className="text-background/50 mt-2 text-xs">
-          Disabling stops the server and hides agent access. Your tokens are kept but won&apos;t
+          Disabling stops the server and hides AI Agent Access. Your tokens are kept but won&apos;t
           work until you re-enable.
         </div>
       </div>

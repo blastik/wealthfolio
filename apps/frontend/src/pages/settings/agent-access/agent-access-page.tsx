@@ -101,7 +101,7 @@ export default function AgentAccessPage() {
   return (
     <div className="space-y-6">
       <SettingsHeader
-        heading="Agent Access"
+        heading="AI Agent Access"
         text="Let AI agents access your portfolio over MCP. Each token's scopes control what it can do."
       />
       <Separator />
@@ -111,7 +111,7 @@ export default function AgentAccessPage() {
           <EmptyPlaceholder.Icon name="Brain" />
           <EmptyPlaceholder.Title>Not available on mobile</EmptyPlaceholder.Title>
           <EmptyPlaceholder.Description>
-            Agent access is managed on desktop or web.
+            AI Agent Access is managed on desktop or web.
           </EmptyPlaceholder.Description>
         </EmptyPlaceholder>
       ) : isDesktop ? (
