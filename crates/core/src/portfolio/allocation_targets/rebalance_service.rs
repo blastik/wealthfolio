@@ -314,7 +314,7 @@ impl RebalanceService {
 impl RebalanceServiceTrait for RebalanceService {
     async fn calculate_plan(
         &self,
-        mut input: CalculateRebalancePlanInput,
+        input: CalculateRebalancePlanInput,
     ) -> CoreResult<RebalancePlan> {
         debug!("Calculating rebalance plan for target {}", input.target_id);
 

@@ -455,7 +455,7 @@ diesel::table! {
         event_id -> Text,
         seq -> BigInt,
         entity -> Text,
-        subject_id -> Text,
+        entity_id -> Text,
         applied_at -> Text,
     }
 }
@@ -493,9 +493,9 @@ diesel::table! {
 }
 
 diesel::table! {
-    sync_entity_metadata (entity, subject_id) {
+    sync_entity_metadata (entity, entity_id) {
         entity -> Text,
-        subject_id -> Text,
+        entity_id -> Text,
         last_event_id -> Text,
         last_client_timestamp -> Text,
         last_op -> Text,
@@ -507,7 +507,7 @@ diesel::table! {
     sync_outbox (event_id) {
         event_id -> Text,
         entity -> Text,
-        subject_id -> Text,
+        entity_id -> Text,
         op -> Text,
         client_timestamp -> Text,
         payload -> Text,

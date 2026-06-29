@@ -78,7 +78,7 @@ struct PresetRuleDeletionDB {
 
 impl crate::sync::SyncOutboxModel for CategorizationRuleDB {
     const ENTITY: SyncEntity = SyncEntity::SpendingCategorizationRule;
-    fn sync_subject_id(&self) -> &str {
+    fn sync_entity_id(&self) -> &str {
         &self.id
     }
 }
@@ -87,12 +87,12 @@ impl crate::sync::SyncOutboxModel for PresetRuleDeletionDB {
     const ENTITY: SyncEntity = SyncEntity::SpendingPresetRuleDeletion;
 
     // `rule_id` is the deleted categorization rule row. The sync entity ID is
-    // the deterministic composite key returned by `sync_subject_id_owned()`.
-    fn sync_subject_id(&self) -> &str {
+    // the deterministic composite key returned by `sync_entity_id_owned()`.
+    fn sync_entity_id(&self) -> &str {
         &self.rule_id
     }
 
-    fn sync_subject_id_owned(&self) -> String {
+    fn sync_entity_id_owned(&self) -> String {
         preset_rule_deletion_id(&self.preset_id, &self.preset_rule_key)
     }
 }
