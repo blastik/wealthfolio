@@ -19,7 +19,11 @@ import { useAccounts } from "@/hooks/use-accounts";
 import { usePersistentState } from "@/hooks/use-persistent-state";
 import { useIsMobileViewport } from "@/hooks/use-platform";
 import { AccountPurpose, PORTFOLIO_SCOPE_ID } from "@/lib/constants";
-import { performancePeriodPnl, performanceSummaryReturn } from "@/lib/performance";
+import {
+  performancePeriodPnl,
+  performanceSummaryReturn,
+  shouldDisplayAnnualizedPerformanceReturn,
+} from "@/lib/performance";
 import { getPerformanceDateRangeForRequest } from "@/lib/performance-date-range";
 import { DateRange, PerformanceResult, TrackedItem } from "@/lib/types";
 import { cn, formatAmount } from "@/lib/utils";
@@ -254,12 +258,16 @@ function firstNotApplicableReason(result: PerformanceResult): string | undefined
   return result.dataQuality.notApplicableReasons?.[0];
 }
 
+function isMoneyWeightedMessage(message: string): boolean {
+  return /\bIRR\b|\bMWR\b|money-weighted|XIRR/i.test(message);
+}
+
 function firstMoneyWeightedReason(result: PerformanceResult): string | undefined {
   const messages = [
     ...(result.dataQuality.notApplicableReasons ?? []),
     ...(result.dataQuality.warnings ?? []),
   ];
-  return messages.find((message) => /\bIRR\b|\bMWR\b|money-weighted|XIRR/i.test(message));
+  return messages.find(isMoneyWeightedMessage);
 }
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -281,7 +289,9 @@ function presentWarning(text: string, namesById: Map<string, string>): string {
 }
 
 function presentMoneyWeightedWarning(text: string, namesById: Map<string, string>): string {
-  return presentWarning(text, namesById).replace(/\bIRR\b/g, "MWR");
+  return presentWarning(text, namesById)
+    .replace(/\bXIRR\b/gi, "annualized MWR")
+    .replace(/\bIRR\b/g, "MWR");
 }
 
 function MetricValue({
@@ -1156,20 +1166,40 @@ export default function PerformancePage() {
           }
         : metricPresentation(selectedMetric);
     const selectedMetricValue = displayMetricValue(found, selectedMetric);
-    const visibleWarnings = (found.dataQuality.warnings ?? []).map((warning) =>
-      presentWarning(warning, accountNamesById),
+    const rawWarnings = found.dataQuality.warnings ?? [];
+    const rawMoneyWeightedWarnings = rawWarnings.filter(isMoneyWeightedMessage);
+    const visibleWarnings = rawWarnings
+      .filter((warning) => !isMoneyWeightedMessage(warning))
+      .map((warning) => presentWarning(warning, accountNamesById));
+    const moneyWeightedWarnings = rawMoneyWeightedWarnings.map((warning) =>
+      presentMoneyWeightedWarning(warning, accountNamesById),
     );
     const rawReason = selectedMetricValue == null ? firstNotApplicableReason(found) : undefined;
-    const moneyWeightedReturn = metricValue(found, "irr");
+    const showAnnualizedMoneyWeightedReturn =
+      shouldDisplayAnnualizedPerformanceReturn(found) && found.returns.annualizedIrr != null;
+    const moneyWeightedReturn = showAnnualizedMoneyWeightedReturn
+      ? Number(found.returns.annualizedIrr)
+      : metricValue(found, "irr");
     const rawMoneyWeightedReason =
       moneyWeightedReturn == null ? firstMoneyWeightedReason(found) : undefined;
-    const showMoneyWeightedReturn =
-      found.mode === "timeWeighted" ||
-      found.returns.irr != null ||
-      found.returns.annualizedIrr != null;
-    const moneyWeightedReason = rawMoneyWeightedReason
+    const presentedMoneyWeightedReason = rawMoneyWeightedReason
       ? presentMoneyWeightedWarning(rawMoneyWeightedReason, accountNamesById)
       : undefined;
+    const moneyWeightedReason =
+      presentedMoneyWeightedReason ??
+      (moneyWeightedReturn == null ? moneyWeightedWarnings[0] : undefined);
+    const showMoneyWeightedReturn =
+      moneyWeightedReturn != null ||
+      Boolean(moneyWeightedReason) ||
+      moneyWeightedWarnings.length > 0;
+    const moneyWeightedReturnLabel = showAnnualizedMoneyWeightedReturn
+      ? "Annualized MWR"
+      : "Money-Weighted Return";
+    const moneyWeightedReturnMobileLabel = showAnnualizedMoneyWeightedReturn ? "Ann. MWR" : "MWR";
+    const moneyWeightedHelpWarnings = [
+      ...moneyWeightedWarnings,
+      ...(moneyWeightedReason ? [moneyWeightedReason] : []),
+    ];
     const periodPnl = found.mode === "symbolPriceBased" ? null : performancePeriodPnl(found);
     const helpItems: StripHelpItem[] = [
       {
@@ -1180,9 +1210,9 @@ export default function PerformancePage() {
       ...(showMoneyWeightedReturn
         ? [
             {
-              label: "Money-Weighted Return",
+              label: moneyWeightedReturnLabel,
               infoText: MONEY_WEIGHTED_RETURN_INFO,
-              warningText: moneyWeightedReason,
+              warningText: moneyWeightedHelpWarnings,
             },
           ]
         : []),
@@ -1222,7 +1252,10 @@ export default function PerformancePage() {
           ? "Annualized TWR"
           : "Annualized Return",
       moneyWeightedReturn,
+      moneyWeightedReturnLabel,
+      moneyWeightedReturnMobileLabel,
       moneyWeightedReason,
+      moneyWeightedWarnings: moneyWeightedHelpWarnings,
       showMoneyWeightedReturn,
       volatility: metricValue(found, "volatility"),
       maxDrawdown: metricValue(found, "drawdown"),
@@ -1577,8 +1610,9 @@ export default function PerformancePage() {
                             <CarouselItem className="basis-[42%] pl-2">
                               <div className="bg-muted/30 rounded-lg px-3 py-2">
                                 <HeaderMetric
-                                  label="MWR"
+                                  label={selectedItemData.moneyWeightedReturnMobileLabel}
                                   infoText={MONEY_WEIGHTED_RETURN_INFO}
+                                  warningText={selectedItemData.moneyWeightedWarnings}
                                   value={selectedItemData.moneyWeightedReturn}
                                   reason={selectedItemData.moneyWeightedReason}
                                   align="left"
@@ -1657,10 +1691,12 @@ export default function PerformancePage() {
                               />
                               {selectedItemData?.showMoneyWeightedReturn && (
                                 <StripMetric
-                                  label="Money-weighted"
+                                  label={selectedItemData.moneyWeightedReturnLabel}
                                   value={selectedItemData.moneyWeightedReturn}
                                   reason={selectedItemData.moneyWeightedReason}
-                                  hasWarning={Boolean(selectedItemData.moneyWeightedReason)}
+                                  hasWarning={Boolean(
+                                    selectedItemData.moneyWeightedWarnings.length,
+                                  )}
                                 />
                               )}
                               <StripMetric
