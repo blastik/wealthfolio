@@ -31,6 +31,8 @@ import type {
   CategoryAllocation,
   PortfolioAllocations,
   AllocationTarget,
+  AllocationTargetConstraint,
+  ConstraintSubjectType,
   AccountScope,
   RebalanceGoal,
   TargetScopeType,
@@ -244,11 +246,13 @@ function isSameEditorMode(left: EditorMode, right: EditorMode): boolean {
 }
 
 function SellProtectionSection({
-  targetConstraints,
+  constraints,
+  onToggle,
   holdings,
   accounts,
 }: {
-  targetConstraints: ReturnType<typeof useTargetConstraints>;
+  constraints: AllocationTargetConstraint[];
+  onToggle: (subjectType: ConstraintSubjectType, subjectId: string) => void;
   holdings: {
     id: string;
     instrument?: { id: string; symbol: string; name?: string | null } | null;
@@ -260,8 +264,16 @@ function SellProtectionSection({
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const [assetSearch, setAssetSearch] = useState("");
 
-  const protectedAssetIds = new Set(targetConstraints.sellBlockedAssetIds);
-  const protectedAccountIds = new Set(targetConstraints.sellBlockedAccountIds);
+  const protectedAssetIds = new Set(
+    constraints
+      .filter((c) => c.subjectType === "asset" && c.action === "sell" && c.effect === "block")
+      .map((c) => c.subjectId),
+  );
+  const protectedAccountIds = new Set(
+    constraints
+      .filter((c) => c.subjectType === "account" && c.action === "sell" && c.effect === "block")
+      .map((c) => c.subjectId),
+  );
 
   const uniqueAssets = holdings.reduce<
     { assetId: string; symbol: string; name: string; value: number }[]
@@ -323,7 +335,7 @@ function SellProtectionSection({
               <span className="text-muted-foreground max-w-[120px] truncate">{a.name}</span>
               <button
                 type="button"
-                onClick={() => targetConstraints.toggleSellBlock("asset", a.assetId)}
+                onClick={() => onToggle("asset", a.assetId)}
                 className="text-muted-foreground hover:text-foreground hover:bg-muted ml-0.5 flex h-[17px] w-[17px] items-center justify-center rounded-full"
               >
                 <Icons.X className="h-3 w-3" />
@@ -363,7 +375,7 @@ function SellProtectionSection({
                       key={a.assetId}
                       type="button"
                       onClick={() => {
-                        targetConstraints.toggleSellBlock("asset", a.assetId);
+                        onToggle("asset", a.assetId);
                         setAssetPopoverOpen(false);
                         setAssetSearch("");
                       }}
@@ -412,7 +424,7 @@ function SellProtectionSection({
               <span className="text-foreground font-medium">{a.name}</span>
               <button
                 type="button"
-                onClick={() => targetConstraints.toggleSellBlock("account", a.id)}
+                onClick={() => onToggle("account", a.id)}
                 className="text-muted-foreground hover:text-foreground hover:bg-muted ml-0.5 flex h-[17px] w-[17px] items-center justify-center rounded-full"
               >
                 <Icons.X className="h-3 w-3" />
@@ -441,7 +453,7 @@ function SellProtectionSection({
                     key={a.id}
                     type="button"
                     onClick={() => {
-                      targetConstraints.toggleSellBlock("account", a.id);
+                      onToggle("account", a.id);
                       setAccountPopoverOpen(false);
                     }}
                     className="hover:bg-muted flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left"
@@ -487,8 +499,55 @@ function TargetEditor({
   const saveTarget = useSaveAllocationTargetWithWeights();
   const { data: existingWeightsData, isLoading: existingWeightsLoading } =
     useAllocationTargetWeights(target?.id ?? null);
-  const targetConstraints = useTargetConstraints(target?.id);
+  const targetConstraintsQuery = useTargetConstraints(target?.id);
   const { holdings } = useHoldings(accountScope);
+  const [constraintsDraft, setConstraintsDraft] = useState<AllocationTargetConstraint[]>([]);
+  const constraintsDraftLoaded = React.useRef(false);
+
+  useEffect(() => {
+    if (targetConstraintsQuery.constraints.length > 0 && !constraintsDraftLoaded.current) {
+      setConstraintsDraft(targetConstraintsQuery.constraints);
+      constraintsDraftLoaded.current = true;
+    } else if (
+      targetConstraintsQuery.constraints.length === 0 &&
+      !targetConstraintsQuery.isLoading &&
+      !constraintsDraftLoaded.current
+    ) {
+      constraintsDraftLoaded.current = true;
+    }
+  }, [targetConstraintsQuery.constraints, targetConstraintsQuery.isLoading]);
+
+  function toggleConstraint(subjectType: ConstraintSubjectType, subjectId: string) {
+    const existing = constraintsDraft.find(
+      (c) =>
+        c.subjectType === subjectType &&
+        c.subjectId === subjectId &&
+        c.action === "sell" &&
+        c.effect === "block",
+    );
+    const now = new Date().toISOString();
+    setConstraintsDraft(
+      existing
+        ? constraintsDraft.filter((c) => c.id !== existing.id)
+        : [
+            ...constraintsDraft,
+            {
+              id: crypto.randomUUID(),
+              targetId: target?.id ?? "",
+              subjectType,
+              subjectId,
+              action: "sell" as const,
+              effect: "block" as const,
+              reason: null,
+              metadataJson: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+    );
+    markDirty();
+  }
+
   const [taxonomyId, setTaxonomyId] = useState(target?.taxonomyId ?? "asset_classes");
   const [startId, setStartId] = useState<string>(target ? "saved" : "current");
   const [targetName, setTargetName] = useState(target?.name ?? "");
@@ -713,6 +772,20 @@ function TargetEditor({
           isRequired: true,
         })),
       });
+
+      if (saved.target.id && constraintsDraft.length > 0) {
+        const constraintsWithTargetId = constraintsDraft.map((c) => ({
+          ...c,
+          targetId: saved.target.id,
+        }));
+        await targetConstraintsQuery.saveConstraints(constraintsWithTargetId);
+      } else if (
+        saved.target.id &&
+        constraintsDraft.length === 0 &&
+        targetConstraintsQuery.constraints.length > 0
+      ) {
+        await targetConstraintsQuery.saveConstraints([]);
+      }
 
       setHasUnsavedChanges(false);
       onUnsavedChange?.(false);
@@ -1111,7 +1184,8 @@ function TargetEditor({
 
           {target && allowSells && (
             <SellProtectionSection
-              targetConstraints={targetConstraints}
+              constraints={constraintsDraft}
+              onToggle={toggleConstraint}
               holdings={holdings.filter((h) => h.holdingType !== "cash" && h.quantity > 0)}
               accounts={accounts.filter((a) => a.isActive)}
             />
