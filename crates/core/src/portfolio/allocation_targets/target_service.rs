@@ -240,11 +240,9 @@ impl AllocationTargetService {
                 .allow_sells
                 .or_else(|| existing.as_ref().map(|target| target.allow_sells))
                 .unwrap_or(false),
-            max_turnover_bps: input.max_turnover_bps.or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|target| target.max_turnover_bps.clone())
-            }),
+            max_turnover_bps: input
+                .max_turnover_bps
+                .or_else(|| existing.as_ref().and_then(|target| target.max_turnover_bps)),
             created_at: existing
                 .as_ref()
                 .map(|target| target.created_at.clone())

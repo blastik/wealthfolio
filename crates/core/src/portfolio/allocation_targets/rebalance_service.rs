@@ -460,8 +460,6 @@ impl RebalanceServiceTrait for RebalanceService {
             &taxonomy_contributions.contributions,
         ));
 
-        let mut classification_warnings = classification_warnings;
-
         let sell_candidates = if profile.allow_sells
             && !matches!(
                 input.scenario_mode,
