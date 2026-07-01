@@ -188,18 +188,18 @@ impl HoldingsCalculator {
     ) -> Result<()> {
         let activity_currency = &activity.currency;
 
-        // Determine charge amount: prefer fee field, fall back to amount
-        let charge = if activity.fee_amt() != Decimal::ZERO {
-            activity.fee_amt()
-        } else {
-            activity.amt()
-        };
+        let charge = activity.charge_amt_for(activity_type);
 
         if charge == Decimal::ZERO {
+            let expected_fields = match activity_type {
+                ActivityType::Tax => "'tax', 'fee', and 'amount'",
+                _ => "'fee' and 'amount'",
+            };
             warn!(
-                "Activity {} ({}): 'fee' and 'amount' are both zero. No cash change.",
+                "Activity {} ({}): {} are zero. No cash change.",
                 activity.id,
-                activity_type.as_str()
+                activity_type.as_str(),
+                expected_fields
             );
             return Ok(());
         }
