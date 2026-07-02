@@ -406,8 +406,7 @@ export function IssueDetailSheet({
   const diagnosticGroups = groupDiagnostics(diagnostics);
   const isGroupedPrice = isGroupedPriceIssue(diagnosticGroups);
   const hasDiagnosticActions = diagnostics.some((diagnostic) => diagnostic.actions.length > 0);
-  const shouldRenderDetails =
-    !hasDiagnostics || isFallbackDiagnosticIssue(issue, diagnostics);
+  const shouldRenderDetails = !hasDiagnostics || isFallbackDiagnosticIssue(issue, diagnostics);
   const detailItems =
     issue.details
       ?.split(/\n\s*\n/)
@@ -509,10 +508,7 @@ export function IssueDetailSheet({
                     : [];
                   const actionEntries = shouldGroupByAsset
                     ? []
-                    : getDiagnosticActionEntries(
-                        group.diagnostics,
-                        group.diagnostics.length === 1,
-                      );
+                    : getDiagnosticActionEntries(group.diagnostics, group.diagnostics.length === 1);
 
                   return (
                     <div key={group.key} className="space-y-3">
