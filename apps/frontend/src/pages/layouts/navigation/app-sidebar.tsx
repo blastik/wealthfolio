@@ -12,6 +12,7 @@ import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import { type NavLink, type NavigationProps, isPathActive } from "./app-navigation";
 import { ConnectNavItem } from "./connect-nav-item";
@@ -23,6 +24,7 @@ interface AppSidebarProps {
 const modKey = isAppleDevice() ? "⌘" : "Ctrl";
 
 export function AppSidebar({ navigation }: AppSidebarProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(true);
   const { logout, requiresAuth } = useAuth();
 
@@ -41,7 +43,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
             <div data-tauri-drag-region="true" className="flex-1">
               <nav
                 data-tauri-drag-region="true"
-                aria-label="Sidebar"
+                aria-label={t("common:layout.sidebar")}
                 className="flex shrink-0 flex-col p-2"
               >
                 <div
@@ -94,7 +96,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                       ? "justify-center rounded-md"
                       : "bg-muted/50 hover:bg-muted/80 justify-start rounded-full px-4 shadow-none",
                   )}
-                  title={`Search (${modKey}+K)`}
+                  title={t("common:layout.search_shortcut", { shortcut: `${modKey}+K` })}
                 >
                   <span aria-hidden="true">
                     <Icons.Search2 className="h-5 w-5 opacity-60" />
@@ -106,7 +108,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                       "block opacity-100": !collapsed,
                     })}
                   >
-                    Search...
+                    {t("common:layout.search")}
                   </span>
                   {!collapsed && (
                     <kbd className="bg-background text-muted-foreground pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border px-1.5 font-mono text-[10px] font-medium opacity-100">
@@ -139,7 +141,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                     "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300",
                     collapsed ? "justify-center" : "justify-start",
                   )}
-                  title="Logout"
+                  title={t("common:layout.logout")}
                 >
                   <span aria-hidden="true">
                     <Icons.LogOut className="h-5 w-5" />
@@ -151,23 +153,31 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                       "block opacity-100": !collapsed,
                     })}
                   >
-                    Logout
+                    {t("common:layout.logout")}
                   </span>
                 </Button>
               )}
               <Separator className="mt-0" />
               <div className="flex justify-end">
                 <Button
-                  title="Toggle Sidebar"
+                  title={t("common:layout.toggle_sidebar")}
                   variant="ghost"
                   onClick={() => setCollapsed(!collapsed)}
                   className="text-muted-foreground [&_svg]:size-5! cursor-pointer rounded-md hover:bg-transparent"
-                  aria-label={collapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+                  aria-label={
+                    collapsed
+                      ? t("common:layout.expand_sidebar")
+                      : t("common:layout.collapse_sidebar")
+                  }
                 >
                   <Icons.PanelLeftOpen
                     size={18}
                     className={`h-5 w-5 transition-transform duration-500 ease-in-out ${!collapsed ? "rotate-180" : ""}`}
-                    aria-label={collapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+                    aria-label={
+                      collapsed
+                        ? t("common:layout.expand_sidebar")
+                        : t("common:layout.collapse_sidebar")
+                    }
                   />
                 </Button>
               </div>
@@ -230,6 +240,7 @@ interface AddonsMenuProps {
 }
 
 function AddonsMenu({ addons, collapsed }: AddonsMenuProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const hasActiveAddon = addons.some((addon) => isPathActive(location.pathname, addon.href));
 
@@ -253,7 +264,7 @@ function AddonsMenu({ addons, collapsed }: AddonsMenuProps) {
               "block opacity-100": !collapsed,
             })}
           >
-            Add-ons
+            {t("common:addons")}
           </span>
         </Button>
       </DropdownMenuTrigger>

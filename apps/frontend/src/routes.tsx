@@ -1,4 +1,5 @@
 import { Suspense, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "@/pages/layouts/app-layout";
@@ -50,6 +51,7 @@ import GoalDetailPage from "@/features/goals/pages/goal-detail-page";
 import GoalRetirementGuidePage from "@/features/goals/pages/goal-retirement-guide-page";
 
 export function AppRoutes() {
+  const { t } = useTranslation();
   const [dynamicRoutes, setDynamicRoutes] = useState<
     { path: string; component: React.LazyExoticComponent<React.ComponentType<unknown>> }[]
   >([]);
@@ -118,7 +120,11 @@ export function AppRoutes() {
               path={path}
               element={
                 <Suspense
-                  fallback={<div className="flex h-64 items-center justify-center">Loading...</div>}
+                  fallback={
+                    <div className="flex h-64 items-center justify-center">
+                      {t("common:loading")}
+                    </div>
+                  }
                 >
                   <Component />
                 </Suspense>
