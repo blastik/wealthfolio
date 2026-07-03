@@ -1,5 +1,11 @@
+import { usePersistentState } from "@/hooks/use-persistent-state";
+import { usePlatform } from "@/hooks/use-platform";
 import { useSettingsContext } from "@/lib/settings-provider";
 import { cn } from "@/lib/utils";
+import {
+  NAVIGATION_MODE_STORAGE_KEY,
+  type NavigationMode,
+} from "@/pages/layouts/navigation/navigation-mode-context";
 import { Icons } from "@wealthfolio/ui";
 import { Card, CardContent } from "@wealthfolio/ui/components/ui/card";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
@@ -42,6 +48,13 @@ export const OnboardingAppearance = forwardRef<
   );
   const [theme, setTheme] = useState<string>(settings?.theme ?? "system");
   const [font, setFont] = useState<string>(settings?.font ?? "font-mono");
+  const { isMobile } = usePlatform();
+  // Navigation style lives in localStorage (read by NavigationModeProvider on app
+  // load); it only applies on large screens, so the picker is desktop-only.
+  const [navMode, setNavMode] = usePersistentState<NavigationMode>(
+    NAVIGATION_MODE_STORAGE_KEY,
+    "sidebar",
+  );
 
   useEffect(() => {
     // Always valid since we have defaults
@@ -213,6 +226,125 @@ export const OnboardingAppearance = forwardRef<
               </button>
             </div>
           </div>
+
+          {/* Navigation Style — desktop only (mobile always uses the mobile nav) */}
+          {!isMobile && (
+            <div>
+              <div className="mb-5 flex items-center gap-3">
+                <div className="bg-muted rounded-lg p-2">
+                  <Icons.PanelLeft className="text-muted-foreground h-5 w-5" />
+                </div>
+                <span className="text-xl font-semibold">
+                  {t("onboarding:appearance.navigationLabel")}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                {/* Sidebar */}
+                <button
+                  type="button"
+                  data-testid="nav-sidebar-button"
+                  onClick={() => setNavMode("sidebar")}
+                  className={cn(
+                    "group relative overflow-hidden rounded-xl border-2 transition-all duration-200",
+                    navMode === "sidebar"
+                      ? "border-primary ring-primary/20 ring-2"
+                      : "border-border hover:border-primary/50",
+                  )}
+                >
+                  <div className="bg-muted/40 aspect-video w-full overflow-hidden p-2.5">
+                    <div className="flex h-full gap-1.5">
+                      <div className="bg-foreground/10 flex w-1/4 flex-col gap-1 rounded-md p-1.5">
+                        <div className="bg-foreground/40 h-1.5 w-1.5 rounded-full" />
+                        <div className="bg-foreground/25 mt-1 h-1 w-full rounded-full" />
+                        <div className="bg-foreground/25 h-1 w-4/5 rounded-full" />
+                        <div className="bg-foreground/25 h-1 w-full rounded-full" />
+                        <div className="bg-foreground/25 h-1 w-3/5 rounded-full" />
+                      </div>
+                      <div className="bg-foreground/5 flex flex-1 flex-col gap-1.5 rounded-md p-2">
+                        <div className="bg-foreground/20 h-2 w-1/2 rounded-full" />
+                        <div className="grid flex-1 grid-cols-2 gap-1.5">
+                          <div className="bg-foreground/10 rounded" />
+                          <div className="bg-foreground/10 rounded" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    className={cn(
+                      "flex items-center justify-center gap-2 py-2.5 sm:py-3",
+                      navMode === "sidebar" ? "bg-primary/10" : "bg-muted/50",
+                    )}
+                  >
+                    <Icons.PanelLeft
+                      className={cn(
+                        "h-4 w-4",
+                        navMode === "sidebar" ? "text-primary" : "text-muted-foreground",
+                      )}
+                    />
+                    <span className="text-sm font-medium">
+                      {t("onboarding:appearance.navSidebar")}
+                    </span>
+                  </div>
+                  {navMode === "sidebar" && (
+                    <div className="bg-primary absolute right-2 top-2 rounded-full p-0.5">
+                      <Icons.Check className="h-3 w-3 text-white" />
+                    </div>
+                  )}
+                </button>
+
+                {/* Floating Bar */}
+                <button
+                  type="button"
+                  data-testid="nav-launchbar-button"
+                  onClick={() => setNavMode("launchbar")}
+                  className={cn(
+                    "group relative overflow-hidden rounded-xl border-2 transition-all duration-200",
+                    navMode === "launchbar"
+                      ? "border-primary ring-primary/20 ring-2"
+                      : "border-border hover:border-primary/50",
+                  )}
+                >
+                  <div className="bg-muted/40 aspect-video w-full overflow-hidden p-2.5">
+                    <div className="bg-foreground/5 relative h-full rounded-md p-2">
+                      <div className="bg-foreground/20 h-2 w-1/2 rounded-full" />
+                      <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                        <div className="bg-foreground/10 h-6 rounded" />
+                        <div className="bg-foreground/10 h-6 rounded" />
+                        <div className="bg-foreground/10 h-6 rounded" />
+                      </div>
+                      <div className="bg-foreground/70 absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full px-2 py-1 shadow-sm">
+                        <div className="bg-background h-1.5 w-1.5 rounded-full" />
+                        <div className="bg-background/60 h-1.5 w-1.5 rounded-full" />
+                        <div className="bg-background/60 h-1.5 w-1.5 rounded-full" />
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    className={cn(
+                      "flex items-center justify-center gap-2 py-2.5 sm:py-3",
+                      navMode === "launchbar" ? "bg-primary/10" : "bg-muted/50",
+                    )}
+                  >
+                    <Icons.RectangleEllipsis
+                      className={cn(
+                        "h-4 w-4",
+                        navMode === "launchbar" ? "text-primary" : "text-muted-foreground",
+                      )}
+                    />
+                    <span className="text-sm font-medium">
+                      {t("onboarding:appearance.navFloating")}
+                    </span>
+                  </div>
+                  {navMode === "launchbar" && (
+                    <div className="bg-primary absolute right-2 top-2 rounded-full p-0.5">
+                      <Icons.Check className="h-3 w-3 text-white" />
+                    </div>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Font Selection */}
           <div>

@@ -70,7 +70,10 @@
       "sansDescription": "Klar & modern",
       "serifLabel": "Serif",
       "serifDescription": "Klassisch & elegant"
-    }
+    },
+    "navigationLabel": "Navigation",
+    "navSidebar": "Seitenleiste",
+    "navFloating": "Schwebeleiste"
   },
   "connect": {
     "optional": "Optional",

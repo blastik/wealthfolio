@@ -70,7 +70,10 @@
       "sansDescription": "Épurée et moderne",
       "serifLabel": "Serif",
       "serifDescription": "Classique et élégante"
-    }
+    },
+    "navigationLabel": "Navigation",
+    "navSidebar": "Barre latérale",
+    "navFloating": "Barre flottante"
   },
   "connect": {
     "optional": "Optionnel",
