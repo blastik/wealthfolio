@@ -164,7 +164,10 @@ const ActivityPage = () => {
     searchParams.has("types") ||
     searchParams.has("from") ||
     searchParams.has("to") ||
-    searchParams.has("q");
+    searchParams.has("q") ||
+    searchParams.has("activity") ||
+    searchParams.has("healthContext");
+  const isHealthActivityDeepLink = activityUrlFilters.healthContext === "activity";
   const accountScope =
     activityUrlFilters.accountScope ??
     (hasActivityUrlFilters ? ALL_ACCOUNT_SCOPE : persistedAccountScope);
@@ -429,6 +432,12 @@ const ActivityPage = () => {
     return effectiveAccountIds.filter((id) => allowed.has(id));
   }, [effectiveAccountIds, investmentAccountIds, isSpendingEnabled, spendingAccountIds]);
 
+  // A health-check deep-link (?activity=<id>) pins the list to one transaction,
+  // filtered server-side so it's found regardless of paging.
+  const activityIdFilter = activityUrlFilters.activityId
+    ? [activityUrlFilters.activityId]
+    : undefined;
+
   // Infinite scroll search for table view
   const infiniteSearch = useActivitySearch({
     mode: "infinite",
@@ -439,6 +448,7 @@ const ActivityPage = () => {
       status: statusFilter,
       dateFrom: effectiveDateFrom,
       dateTo: effectiveDateTo,
+      activityIds: activityIdFilter,
     },
     searchQuery: effectiveSearchQuery,
     sorting,
@@ -454,6 +464,7 @@ const ActivityPage = () => {
       status: statusFilter,
       dateFrom: effectiveDateFrom,
       dateTo: effectiveDateTo,
+      activityIds: activityIdFilter,
     },
     searchQuery: effectiveSearchQuery,
     sorting,
@@ -479,7 +490,8 @@ const ActivityPage = () => {
     sorting,
   ]);
 
-  // Use appropriate data based on view mode
+  // Use appropriate data based on view mode. The ?activity=<id> deep-link is
+  // applied server-side via the activityIds filter, so no client-side narrowing.
   const tableActivities = infiniteSearch.data;
   const datagridActivities = paginatedSearch.data;
   const totalFetched = tableActivities.length;
@@ -660,6 +672,22 @@ const ActivityPage = () => {
 
   const investmentContent = (
     <div className="flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden">
+      {isHealthActivityDeepLink && (
+        <div className="border-border bg-muted/30 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Icons.Info className="text-muted-foreground h-4 w-4 shrink-0" />
+            <p className="text-sm">
+              {activityUrlFilters.activityId
+                ? "Showing the transaction flagged by Health Center"
+                : "Showing transactions flagged by Health Center"}
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={clearActivityUrlFilterParams}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       {isMobileViewport ? (
         <ActivityMobileControls
           accounts={investmentAccounts}

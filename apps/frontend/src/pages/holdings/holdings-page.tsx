@@ -57,8 +57,11 @@ export const HoldingsPage = () => {
   const { t } = useTranslation();
   const isMobileViewport = useIsMobileViewport();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const currentTab = searchParams.get("tab") ?? "investments";
+  // Health-center deep-links (e.g. /holdings?filter=negative|unclassified).
+  const healthFilter = searchParams.get("filter");
+  const healthContext = searchParams.get("healthContext");
   const queryClient = useQueryClient();
   const { settings } = useSettingsContext();
   const baseCurrency = settings?.baseCurrency ?? "USD";
@@ -136,6 +139,18 @@ export const HoldingsPage = () => {
     },
     [accounts],
   );
+
+  const clearHealthContext = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("filter");
+        next.delete("healthContext");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   // Check if the selected account supports manual holdings editing
   const canEditHoldings = useMemo(() => {
@@ -336,12 +351,19 @@ export const HoldingsPage = () => {
       });
     }
 
+    // Health-center deep-link filters.
+    if (healthFilter === "negative") {
+      filtered = filtered.filter((holding) => holding.quantity < 0);
+    } else if (healthFilter === "unclassified") {
+      filtered = filtered.filter((holding) => !holding.instrument?.classifications?.assetType);
+    }
+
     return {
       nonCashHoldings: nonCash,
       filteredHoldings: filtered,
       availableTypeOptions: typeOptions,
     };
-  }, [holdings, selectedTypes, investmentsFilter]);
+  }, [holdings, selectedTypes, investmentsFilter, healthFilter]);
 
   // Combined loading state
   const isDataLoading = isLoading || isAccountsLoading || isAlternativeHoldingsLoading;
@@ -354,6 +376,18 @@ export const HoldingsPage = () => {
   // Investments content
   const investmentsContent = (
     <>
+      {(healthFilter || healthContext === "holding") && (
+        <div className="border-border bg-muted/30 mb-4 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Icons.Info className="text-muted-foreground h-4 w-4 shrink-0" />
+            <p className="text-sm">Showing holdings flagged by Health Center</p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={clearHealthContext}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Edit Mode for HOLDINGS-mode accounts */}
       {isEditMode && selectedAccount && canEditHoldings ? (
         <HoldingsEditMode

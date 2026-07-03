@@ -68,8 +68,6 @@ impl AccountConfigurationCheck {
                     .id(format!("unconfigured_accounts:{}", data_hash))
                     .severity(Severity::Warning)
                     .category(HealthCategory::AccountConfiguration)
-                    .code("account_unconfigured")
-                    .param("count", count as u32)
                     .title(title)
                     .message(message)
                     .affected_count(count as u32)
@@ -97,7 +95,6 @@ impl AccountConfigurationCheck {
                 .id(format!("timezone_missing:{}", data_hash))
                 .severity(Severity::Warning)
                 .category(HealthCategory::SettingsConfiguration)
-                .code("account_timezone_missing")
                 .title("Timezone not configured".to_string())
                 .message(
                     "Set your timezone in General settings to ensure dates match your locale."
@@ -117,8 +114,6 @@ impl AccountConfigurationCheck {
                     .id(format!("timezone_invalid:{}", data_hash))
                     .severity(Severity::Error)
                     .category(HealthCategory::SettingsConfiguration)
-                    .code("account_timezone_invalid")
-                    .param("timezone", configured_timezone.to_string())
                     .title("Configured timezone is invalid".to_string())
                     .message(format!(
                         "The configured timezone \"{}\" is invalid. Update it in General settings.",
@@ -153,9 +148,6 @@ impl AccountConfigurationCheck {
             .id(format!("timezone_mismatch:{}", data_hash))
             .severity(Severity::Warning)
             .category(HealthCategory::SettingsConfiguration)
-            .code("account_timezone_mismatch")
-            .param("configured", configured_tz.name())
-            .param("browser", client_tz.name())
             .title("Browser and app timezones differ".to_string())
             .message(format!(
                 "Configured timezone is \"{}\" but browser timezone is \"{}\". Dates follow the configured timezone.",
