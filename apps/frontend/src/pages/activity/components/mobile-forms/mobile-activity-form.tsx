@@ -217,6 +217,13 @@ function validateTradeFields(
     if (!data.optionType) {
       return { field: "optionType", message: t("activity:form.err_option_type_required") };
     }
+    // Require an explicit Open/Close choice — matches the desktop option form.
+    if (
+      data.subtype !== ACTIVITY_SUBTYPES.POSITION_OPEN &&
+      data.subtype !== ACTIVITY_SUBTYPES.POSITION_CLOSE
+    ) {
+      return { field: "subtype", message: t("activity:form.err_open_or_close") };
+    }
   } else {
     if (!(data.assetId as string)?.trim()) {
       return { field: "assetId", message: t("activity:form.err_select_security") };

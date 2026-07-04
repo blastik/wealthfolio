@@ -9,6 +9,8 @@ import {
   SymbolSearch,
   AssetTypeSelector,
   OptionContractFields,
+  PositionIntentSelector,
+  StockTradeIntentSelector,
   type AssetType,
   type AccountSelectOption,
 } from "../forms/fields";
@@ -284,6 +286,9 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
       setValue("quoteMode" as any, QuoteMode.MARKET);
       setValue("assetKind" as any, undefined);
     }
+    // Reset the trade intent (Sell Short / Buy to Cover / option Open-Close) so
+    // a stale subtype never carries across asset types.
+    setValue("subtype" as any, null);
     setValue("assetId" as any, "");
     setValue("existingAssetId" as any, undefined);
     setValue("exchangeMic" as any, undefined);
@@ -755,6 +760,20 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
 
           {hasValueFields && (
             <FormSection title={detailsTitle}>
+              {/* Trade intent — Sell/Sell Short (stock), Open/Close (option). Bonds have none. */}
+              {isBuyOrSell && !isBond && (
+                <div className="-mt-1">
+                  {isOption ? (
+                    <PositionIntentSelector control={control as any} name={"subtype" as any} />
+                  ) : (
+                    <StockTradeIntentSelector
+                      control={control as any}
+                      name={"subtype" as any}
+                      side={activityType === ActivityType.SELL ? "sell" : "buy"}
+                    />
+                  )}
+                </div>
+              )}
               {/* Quantity and Unit Price */}
               {needsQuantity && (
                 <>
