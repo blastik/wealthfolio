@@ -863,8 +863,14 @@ export function MobileActivityForm({
                 ))}
               </div>
             )}
-            {activity?.id && (
+            {activity?.id ? (
               <SheetDescription>{t("activity:mobile_form.update_details")}</SheetDescription>
+            ) : (
+              // Always describe the dialog for a11y; the add flow shows step dots
+              // instead of visible description text, so keep it screen-reader only.
+              <SheetDescription className="sr-only">
+                {t("activity:mobile_form.add_details")}
+              </SheetDescription>
             )}
           </div>
         </SheetHeader>
