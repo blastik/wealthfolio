@@ -19,8 +19,10 @@ addons that register routes. See the
 - **React exports removed**: the SDK no longer re-exports `React` / `ReactDOM`
   from host globals. Import from `react` / `react-dom/client`; mark them
   `external` in your build.
-- **`SidebarItemConfig`**: `icon` is now a string (host icon name) only —
-  `React.ReactNode` icons and the `onClick` handler were removed. Use `route`.
+- **`SidebarItemConfig`**: `icon` is now a typed `AddonIconName` (one of a
+  curated set of duotone Phosphor icons the host bundles) — `React.ReactNode`
+  icons and the `onClick` handler were removed. Use `route`. Unknown/omitted
+  names render a neutral `caret-right` fallback.
 - **React** guaranteed version bumped 19.1.1 → 19.2.4.
 
 ### Added
@@ -28,6 +30,8 @@ addons that register routes. See the
 - `HOST_DEPENDENCIES` export — the versioned packages the sandbox provides
   (react, react-dom, @tanstack/react-query, @wealthfolio/ui, date-fns,
   lucide-react, recharts).
+- `AddonIconName` type and `ADDON_ICON_NAMES` list — the 80 supported sidebar
+  icon names.
 - Brokered networking: `ctx.api.network.request()` with manifest-declared
   `network.allowedHosts` and bearer auth resolved from scoped secret storage
   (`NetworkAPI`, `NetworkRequest`, `NetworkResponse`, `NetworkAuth`).
