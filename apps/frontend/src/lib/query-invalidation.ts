@@ -58,6 +58,7 @@ export function invalidateAfterAssetClassificationsChanged(
 
   queryClient.invalidateQueries({ queryKey: [QueryKeys.PORTFOLIO_ALLOCATIONS] });
   queryClient.invalidateQueries({ queryKey: [QueryKeys.HOLDINGS] });
+  queryClient.invalidateQueries({ queryKey: [QueryKeys.HOLDINGS_BY_ALLOCATION] });
   queryClient.invalidateQueries({ queryKey: [QueryKeys.ALLOCATION_TARGET_DRIFT] });
   queryClient.invalidateQueries({ queryKey: [QueryKeys.HEALTH_STATUS] });
 }

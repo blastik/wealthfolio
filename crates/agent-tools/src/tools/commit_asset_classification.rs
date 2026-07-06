@@ -16,6 +16,27 @@ use crate::tool::{AgentTool, AgentToolAccess, AgentToolError, AgentToolResult};
 
 const AI_ASSIGNMENT_SOURCE: &str = "ai";
 
+/// Drop classification commit details from audit args. This is an allowlist so
+/// extra top-level fields cannot smuggle raw payloads into `mcp_audit_log`.
+fn redact_classification_commit(args: &serde_json::Value) -> serde_json::Value {
+    let mut redacted = serde_json::Map::new();
+    if let Some(obj) = args.as_object() {
+        if obj.contains_key("assetId") {
+            redacted.insert("assetId".to_string(), serde_json::json!("[redacted]"));
+        }
+        if obj.contains_key("taxonomyId") {
+            redacted.insert("taxonomyId".to_string(), serde_json::json!("[redacted]"));
+        }
+        if let Some(assignments) = obj.get("assignments").and_then(|a| a.as_array()) {
+            redacted.insert(
+                "assignments".to_string(),
+                serde_json::json!(format!("[{} assignments]", assignments.len())),
+            );
+        }
+    }
+    serde_json::Value::Object(redacted)
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitAssetClassificationAssignmentInput {
@@ -170,6 +191,10 @@ impl AgentTool for CommitAssetClassificationDraft {
         AgentToolAccess::Write
     }
 
+    fn sanitize_args_for_audit(&self, args: &serde_json::Value) -> serde_json::Value {
+        redact_classification_commit(args)
+    }
+
     async fn call(
         &self,
         env: Arc<dyn AgentEnvironment>,
@@ -261,5 +286,46 @@ mod tests {
             ),
             Err(AgentToolError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn audit_redaction_summarizes_classification_commit() {
+        let args = serde_json::json!({
+            "assetId": "asset-secret",
+            "taxonomyId": "regions",
+            "assignments": [
+                { "categoryId": "us", "weightBasisPoints": 9740 },
+                { "categoryId": "ca", "weightBasisPoints": 260 }
+            ],
+        });
+
+        assert_eq!(
+            CommitAssetClassificationDraft.sanitize_args_for_audit(&args),
+            serde_json::json!({
+                "assetId": "[redacted]",
+                "taxonomyId": "[redacted]",
+                "assignments": "[2 assignments]",
+            })
+        );
+    }
+
+    #[test]
+    fn audit_redaction_drops_unknown_keys() {
+        let args = serde_json::json!({
+            "assetId": "asset-secret",
+            "taxonomyId": "regions",
+            "assignments": [],
+            "note": "do not store me",
+            "payload": { "categoryId": "private" },
+        });
+
+        let redacted = CommitAssetClassificationDraft.sanitize_args_for_audit(&args);
+        assert!(redacted.get("note").is_none());
+        assert!(redacted.get("payload").is_none());
+        assert_eq!(redacted.as_object().unwrap().len(), 3);
+        assert_eq!(
+            redacted["assignments"],
+            serde_json::json!("[0 assignments]")
+        );
     }
 }
