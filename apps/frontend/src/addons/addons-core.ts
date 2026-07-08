@@ -4,6 +4,10 @@ import {
   getDynamicRoutes,
   setInstalledAddonIds,
 } from "@/addons/addons-runtime-context";
+import {
+  clearAllContributions,
+  ingestAddonContributions,
+} from "@/addons/contribution-registry";
 import { addonIframeManager, type AddonRuntimeHandle } from "@/addons/iframe/addon-iframe-manager";
 import { toast } from "sonner";
 import type { AddonManifest } from "@wealthfolio/addon-sdk";
@@ -175,6 +179,16 @@ export async function loadInstalledAddons(): Promise<void> {
 
   // Filter only enabled addons
   const enabledAddonFiles = addonFiles.filter((addonFile) => addonFile.manifest.enabled !== false);
+
+  // Rebuild the durable contribution layer from scratch on every (re)load so a
+  // disabled/uninstalled addon (no longer in enabledAddonFiles) leaves no stale
+  // nav. Ingest reads `contributes.views` from the manifest WITHOUT executing
+  // addon code or booting an iframe — it only populates the durable nav/route
+  // layer. A disabled addon shows no nav, so ingest only the enabled ones.
+  clearAllContributions();
+  for (const addonFile of enabledAddonFiles) {
+    ingestAddonContributions(addonFile.manifest.id, addonFile.manifest);
+  }
 
   if (enabledAddonFiles.length === 0) {
     logger.info("📦 No enabled addons found to load");

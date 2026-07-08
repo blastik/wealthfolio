@@ -1,6 +1,7 @@
 import type { AddonContext, Permission, SidebarItemConfig } from "@wealthfolio/addon-sdk";
 import { toast } from "sonner";
 import { createPermissionGuard, createSDKHostAPIBridge, type PermissionGuard } from "./type-bridge";
+import { getDurableNavItems, getDurableRoutes } from "./contribution-registry";
 
 import {
   logger,
@@ -178,17 +179,17 @@ function notifyNavigationUpdate() {
   navigationUpdateListeners.forEach((listener) => listener());
 }
 
-function scopedKey(addonId: string, id: string) {
+export function scopedKey(addonId: string, id: string) {
   return `${addonId}:${id}`;
 }
 
-function cleanRoutePath(path: string) {
+export function cleanRoutePath(path: string) {
   const routeOnly = path.trim().split(/[?#]/, 1)[0] ?? "";
   const withSlash = routeOnly.startsWith("/") ? routeOnly : `/${routeOnly}`;
   return withSlash.length > 1 && withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
 }
 
-function toRouterPath(href: string) {
+export function toRouterPath(href: string) {
   return href.replace(/^\/+/, "");
 }
 
@@ -366,11 +367,31 @@ export function clearAddonRegistrations(addonId: string) {
 }
 
 export function getDynamicNavItems() {
-  return Array.from(dynamicNavItems.values()).sort((a, b) => a.order - b.order);
+  // Merge durable (manifest-contributed) items with transient runtime
+  // registrations. Both are keyed by the scoped id (`addonId:viewId`); per RFC
+  // A2 a runtime registration whose view id duplicates a durable contribution is
+  // ignored (durable wins), so we seed transient first and let durable override.
+  const merged = new Map<string, DynamicNavItem>();
+  for (const item of dynamicNavItems.values()) {
+    merged.set(item.id, item);
+  }
+  for (const item of getDurableNavItems()) {
+    merged.set(item.id, item);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.order - b.order);
 }
 
 export function getDynamicRoutes() {
-  return Array.from(dynamicRoutes.values()).sort((a, b) => a.path.localeCompare(b.path));
+  // Same durable-wins merge as nav items, keyed by `addonId:routeId` (== the
+  // durable view id per RFC A2).
+  const merged = new Map<string, DynamicRouteEntry>();
+  for (const route of dynamicRoutes.values()) {
+    merged.set(scopedKey(route.addonId, route.routeId), route);
+  }
+  for (const route of getDurableRoutes()) {
+    merged.set(scopedKey(route.addonId, route.routeId), route);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function subscribeToNavigationUpdates(callback: () => void) {
