@@ -326,7 +326,7 @@ function CashAuditSummary({
             <Icons.AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
             <span>
               {t("activity:date_list.cash_negative_after", {
-                type: localizeActivityTypeName(t, crossingRow.activity.activityType).toLowerCase(),
+                type: localizeActivityTypeName(t, crossingRow.activity.activityType),
               })}
             </span>
           </div>
