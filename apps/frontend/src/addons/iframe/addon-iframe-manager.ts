@@ -315,6 +315,7 @@ const ALLOWED_API_METHODS = new Set([
   "exchangeRates.getAll",
   "exchangeRates.update",
   "exchangeRates.add",
+  "exchangeRates.getRatesForDates",
   "contributionLimits.getAll",
   "contributionLimits.create",
   "contributionLimits.update",

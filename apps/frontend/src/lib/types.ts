@@ -1118,6 +1118,20 @@ export interface ExchangeRate {
   timestamp: string;
 }
 
+export interface ExchangeRateDateQuery {
+  fromCurrency: string;
+  toCurrency: string;
+  date: string;
+}
+
+export interface ExchangeRateDateResult {
+  fromCurrency: string;
+  toCurrency: string;
+  date: string;
+  rate: number | null;
+  error: string | null;
+}
+
 export interface ContributionLimit {
   id: string;
   groupName: string;
