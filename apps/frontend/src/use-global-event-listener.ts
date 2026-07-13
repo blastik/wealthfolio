@@ -28,6 +28,7 @@ import { toast } from "sonner";
 
 const TOAST_IDS = {
   marketSyncStart: "market-sync-start",
+  marketSyncError: "market-sync-error",
   portfolioUpdateStart: "portfolio-update-start",
   portfolioUpdateError: "portfolio-update-error",
 
@@ -106,7 +107,7 @@ const useGlobalEventListener = () => {
       if (failed_syncs && failed_syncs.length > 0) {
         const count = failed_syncs.length;
         toast.error(`Price update failed for ${count} asset${count === 1 ? "" : "s"}`, {
-          id: "market-sync-error",
+          id: TOAST_IDS.marketSyncError,
           duration: 10000,
           action: {
             label: "View",
@@ -138,6 +139,7 @@ const useGlobalEventListener = () => {
         toast.dismiss(TOAST_IDS.marketSyncStart);
       }
       toast.error("Market Data Sync Failed", {
+        id: TOAST_IDS.marketSyncError,
         description: `${errorMsg}. Please try again later.`,
         duration: 10000,
       });

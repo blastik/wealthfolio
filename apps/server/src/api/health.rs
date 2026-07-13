@@ -3,7 +3,9 @@ use std::sync::Arc;
 use crate::{
     api::shared::{process_portfolio_job, PortfolioJobConfig},
     error::{ApiError, ApiResult},
-    events::{ServerEvent, MARKET_SYNC_COMPLETE, MARKET_SYNC_ERROR, MARKET_SYNC_START},
+    events::{
+        MarketSyncResult, ServerEvent, MARKET_SYNC_COMPLETE, MARKET_SYNC_ERROR, MARKET_SYNC_START,
+    },
     main_lib::AppState,
 };
 use axum::{
@@ -154,12 +156,6 @@ async fn execute_health_fix(
             ));
         }
 
-        state
-            .quote_service
-            .reset_sync_errors(&asset_ids)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to reset sync errors: {}", e))?;
-
         state.event_bus.publish(ServerEvent::new(MARKET_SYNC_START));
 
         match state
@@ -178,10 +174,10 @@ async fn execute_health_fix(
                     .collect();
                 state.event_bus.publish(ServerEvent::with_payload(
                     MARKET_SYNC_COMPLETE,
-                    json!({
-                        "failed_syncs": result.failures,
-                        "skipped_reasons": skipped_reasons,
-                        "show_skipped_reasons": true,
+                    json!(MarketSyncResult {
+                        failed_syncs: result.failures,
+                        skipped_reasons,
+                        show_skipped_reasons: true,
                     }),
                 ));
             }

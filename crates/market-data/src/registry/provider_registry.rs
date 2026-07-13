@@ -783,6 +783,7 @@ impl ProviderRegistry {
         }
 
         let mut last_error: Option<MarketDataError> = None;
+        let mut saw_no_data = false;
 
         for provider in providers {
             let provider_id: ProviderId = Cow::Borrowed(provider.id());
@@ -819,7 +820,7 @@ impl ProviderRegistry {
                             provider_id.clone(),
                             "No data returned for requested range".to_string(),
                         );
-                        last_error = Some(MarketDataError::NoDataForRange);
+                        saw_no_data = true;
                         continue;
                     }
 
@@ -836,7 +837,7 @@ impl ProviderRegistry {
                         }
                     }
 
-                    if valid_quotes.is_empty() && original_count > 0 {
+                    if valid_quotes.is_empty() {
                         diagnostics.record_error(
                             provider_id.clone(),
                             "All quotes failed validation".to_string(),
@@ -852,6 +853,14 @@ impl ProviderRegistry {
                     return (Ok(valid_quotes), diagnostics);
                 }
                 Err(MarketDataError::NotSupported { .. }) => continue,
+                Err(MarketDataError::NoDataForRange) => {
+                    diagnostics.record_error(
+                        provider_id,
+                        "No data returned for requested range".to_string(),
+                    );
+                    saw_no_data = true;
+                    continue;
+                }
                 Err(e) => {
                     let retry_class = e.retry_class();
                     diagnostics.record_error(provider_id.clone(), format!("{:?}", e));
@@ -875,10 +884,14 @@ impl ProviderRegistry {
             "All providers failed. Diagnostics: {}",
             diagnostics.summary()
         );
-        (
-            Err(last_error.unwrap_or(MarketDataError::AllProvidersFailed)),
-            diagnostics,
-        )
+        let error = last_error.unwrap_or_else(|| {
+            if saw_no_data {
+                MarketDataError::NoDataForRange
+            } else {
+                MarketDataError::AllProvidersFailed
+            }
+        });
+        (Err(error), diagnostics)
     }
 
     /// Fetch latest quote for an instrument with diagnostics.
@@ -1207,6 +1220,38 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(MarketDataError::NoDataForRange)));
+    }
+
+    #[tokio::test]
+    async fn test_empty_result_does_not_mask_provider_error() {
+        let providers: Vec<Arc<dyn MarketDataProvider>> = vec![
+            Arc::new(MockProvider::new("FAILING", 0, true)),
+            Arc::new(EmptyHistoricalProvider {
+                call_count: Arc::new(AtomicUsize::new(0)),
+            }),
+        ];
+        let registry = ProviderRegistry::new(providers, Arc::new(MockResolver));
+        let context = QuoteContext {
+            instrument: InstrumentId::Equity {
+                ticker: Arc::from("TEST"),
+                mic: Some(Cow::Borrowed("XNAS")),
+            },
+            identifiers: Default::default(),
+            overrides: None,
+            currency_hint: None,
+            preferred_provider: None,
+            bond_metadata: None,
+            custom_provider_code: None,
+        };
+
+        let (result, _) = registry
+            .fetch_quotes_with_diagnostics(&context, Utc::now(), Utc::now())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketDataError::ProviderError { provider, .. }) if provider == "FAILING"
+        ));
     }
 
     #[test]
