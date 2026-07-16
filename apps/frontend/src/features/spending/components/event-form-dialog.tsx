@@ -323,7 +323,7 @@ export function EventFormDialog({
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+          <form onSubmit={form.handleSubmit(handleSubmit)} className="min-w-0 space-y-4">
             <FormField
               control={form.control}
               name="name"
