@@ -77,7 +77,7 @@ const SPENDING_TAXONOMY = "spending_categories";
 type SpendingDashboardPeriod = "MTD" | "LAST_MONTH" | "3M" | "6M" | "YTD" | "1Y";
 
 type SpendingSelection =
-  | { kind: "period"; code: SpendingDashboardPeriod }
+  | { kind: "period"; code: SpendingDashboardPeriod; offset: number }
   | { kind: "month"; monthKey: string; restoreCode: SpendingDashboardPeriod };
 
 const SPENDING_DASHBOARD_PERIODS: SpendingDashboardPeriod[] = [
@@ -88,6 +88,18 @@ const SPENDING_DASHBOARD_PERIODS: SpendingDashboardPeriod[] = [
   "YTD",
   "1Y",
 ];
+
+// How many months a single "step" back/forward covers for each period, so
+// paging a rolling window (e.g. 1Y) lands on the equivalent prior window
+// rather than an arbitrary jump.
+const PERIOD_STEP_MONTHS: Record<SpendingDashboardPeriod, number> = {
+  MTD: 1,
+  LAST_MONTH: 1,
+  "3M": 3,
+  "6M": 6,
+  YTD: 12,
+  "1Y": 12,
+};
 
 const DEFAULT_INTERVAL: SpendingDashboardPeriod = "MTD";
 const INTERVAL_STORAGE_KEY = "spending-interval";
@@ -146,8 +158,9 @@ function normalizeSpendingDashboardPeriod(
   return DEFAULT_INTERVAL;
 }
 
-function spendingIntervalData(code: SpendingDashboardPeriod, timezone?: string | null) {
-  const today = getZonedDateParts(new Date(), timezone);
+function spendingIntervalData(code: SpendingDashboardPeriod, timezone?: string | null, offset = 0) {
+  const now = getZonedDateParts(new Date(), timezone);
+  const today = offset > 0 ? addCalendarMonths(now, -offset * PERIOD_STEP_MONTHS[code]) : now;
   const { start, end } = (() => {
     switch (code) {
       case "MTD":
@@ -174,14 +187,23 @@ function spendingIntervalData(code: SpendingDashboardPeriod, timezone?: string |
     }
   })();
 
+  const range = { from: localDateFromParts(start), to: localDateFromParts(end) };
+
   return {
     code,
-    description: INTERVAL_DESCRIPTIONS[code],
-    range: {
-      from: localDateFromParts(start),
-      to: localDateFromParts(end),
-    },
+    description: offset > 0 ? formatOffsetPeriodDescription(range) : INTERVAL_DESCRIPTIONS[code],
+    range,
   };
+}
+
+// "This month"/"past year" only make sense for the current window; once
+// paged away via the period arrows, show the concrete month(s) instead.
+const MONTH_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" });
+
+function formatOffsetPeriodDescription(range: DateRange): string {
+  const from = MONTH_YEAR_FORMAT.format(range.from);
+  const to = MONTH_YEAR_FORMAT.format(range.to);
+  return from === to ? from : `${from} – ${to}`;
 }
 
 function insightPeriodForDashboardInterval(code: SpendingDashboardPeriod): ReportsPeriod {
@@ -199,7 +221,9 @@ function selectionFromParams(
   const restoreCode = normalizeSpendingDashboardPeriod(intervalParam ?? persistedInterval);
   const monthKey = monthParam ?? (intervalParam === null ? persistedMonth : null);
   if (monthKey && parseMonthKey(monthKey)) return { kind: "month", monthKey, restoreCode };
-  return { kind: "period", code: restoreCode };
+  const offsetParam = Number(params.get("spendingOffset"));
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? Math.floor(offsetParam) : 0;
+  return { kind: "period", code: restoreCode, offset };
 }
 
 function budgetMonthStateForSelection(
@@ -207,7 +231,10 @@ function budgetMonthStateForSelection(
   currentMonthKey: string,
 ): { monthKey: string; touched: boolean } {
   if (selection.kind === "period" && selection.code === "LAST_MONTH") {
-    return { monthKey: addMonthsToMonthKey(currentMonthKey, -1), touched: true };
+    return { monthKey: addMonthsToMonthKey(currentMonthKey, -1 - selection.offset), touched: true };
+  }
+  if (selection.kind === "period" && selection.code === "MTD" && selection.offset > 0) {
+    return { monthKey: addMonthsToMonthKey(currentMonthKey, -selection.offset), touched: true };
   }
   if (selection.kind === "month" && selection.monthKey <= currentMonthKey) {
     return { monthKey: selection.monthKey, touched: true };
@@ -217,7 +244,9 @@ function budgetMonthStateForSelection(
 
 function budgetSelectionSyncKey(selection: SpendingSelection, currentMonthKey: string): string {
   if (selection.kind === "month") return `month:${selection.monthKey}`;
-  if (selection.code === "LAST_MONTH") return `period:${selection.code}:${currentMonthKey}`;
+  if (selection.code === "LAST_MONTH" || selection.code === "MTD") {
+    return `period:${selection.code}:${selection.offset}:${currentMonthKey}`;
+  }
   return `period:${selection.code}`;
 }
 
@@ -230,7 +259,7 @@ function selectionData(selection: SpendingSelection, timezone?: string | null) {
     };
   }
 
-  const interval = spendingIntervalData(selection.code, timezone);
+  const interval = spendingIntervalData(selection.code, timezone, selection.offset);
   return {
     range: interval.range,
     description: interval.description,
@@ -546,6 +575,7 @@ export default function SpendingTabContent() {
         const p = new URLSearchParams(prev);
         p.set("spendingInterval", code);
         p.delete(SPENDING_MONTH_PARAM);
+        p.delete("spendingOffset");
         return p;
       },
       { replace: true },
@@ -557,6 +587,25 @@ export default function SpendingTabContent() {
       setBudgetMonthKey(currentBudgetMonthKey);
       setBudgetMonthTouched(false);
     }
+  };
+
+  // Steps the current rolling period backward/forward by one window (e.g.
+  // 1Y pages a year at a time). Offset only applies to "period" selections;
+  // custom months are already navigable via the month picker.
+  const handlePeriodStep = (direction: 1 | -1) => {
+    if (selection.kind !== "period") return;
+    const nextOffset = Math.max(0, selection.offset + direction);
+    if (nextOffset === selection.offset) return;
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.set("spendingInterval", selection.code);
+        if (nextOffset > 0) p.set("spendingOffset", String(nextOffset));
+        else p.delete("spendingOffset");
+        return p;
+      },
+      { replace: true },
+    );
   };
 
   const handleCustomMonthSelect = (monthKey: string | null) => {
@@ -572,6 +621,7 @@ export default function SpendingTabContent() {
           p.set("spendingInterval", restoreCode);
           p.delete(SPENDING_MONTH_PARAM);
         }
+        p.delete("spendingOffset");
         return p;
       },
       { replace: true },
@@ -849,11 +899,34 @@ export default function SpendingTabContent() {
       <div className="px-4 pb-6 pt-2 md:px-6 md:pb-2 lg:px-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-8">
           <div>
-            <div className="text-muted-foreground/80 text-[11px] font-semibold uppercase tracking-[0.12em]">
-              {t("spending:tabContent.spentLabel")}
-              {selectedIntervalDescription
-                ? ` · ${selectedIntervalDescription.startsWith("spending:") ? t(selectedIntervalDescription) : selectedIntervalDescription}`
-                : ""}
+            <div className="text-muted-foreground/80 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.12em]">
+              <span>
+                {t("spending:tabContent.spentLabel")}
+                {selectedIntervalDescription
+                  ? ` · ${selectedIntervalDescription.startsWith("spending:") ? t(selectedIntervalDescription) : selectedIntervalDescription}`
+                  : ""}
+              </span>
+              {selection.kind === "period" && (
+                <span className="ml-0.5 inline-flex items-center gap-0.5 normal-case">
+                  <button
+                    type="button"
+                    onClick={() => handlePeriodStep(1)}
+                    className="hover:bg-muted hover:text-foreground flex h-5 w-5 items-center justify-center rounded-full transition-colors"
+                    aria-label={t("spending:tabContent.previousPeriod")}
+                  >
+                    <Icons.ChevronLeft className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePeriodStep(-1)}
+                    disabled={selection.offset === 0}
+                    className="hover:bg-muted hover:text-foreground disabled:text-muted-foreground/30 flex h-5 w-5 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed"
+                    aria-label={t("spending:tabContent.nextPeriod")}
+                  >
+                    <Icons.ChevronRight className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
             </div>
             <Balance
               isLoading={isLoading}
