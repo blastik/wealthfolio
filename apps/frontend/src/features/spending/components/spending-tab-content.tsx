@@ -22,10 +22,12 @@ import { cn, formatAmount, formatDateISO } from "@/lib/utils";
 import Balance from "@/pages/dashboard/balance";
 
 import {
+  formatCompactAmount,
+  formatPeriodRangeLabel,
   Icons,
+  PeriodStepArrows,
   PrivacyAmount,
   Skeleton,
-  formatCompactAmount,
   usePersistentState,
 } from "@wealthfolio/ui";
 
@@ -191,19 +193,14 @@ function spendingIntervalData(code: SpendingDashboardPeriod, timezone?: string |
 
   return {
     code,
-    description: offset > 0 ? formatOffsetPeriodDescription(range) : INTERVAL_DESCRIPTIONS[code],
+    // "This month"/"past year" only makes sense for the current window;
+    // once paged away via the period arrows, show the concrete month(s).
+    description:
+      offset > 0
+        ? (formatPeriodRangeLabel(range) ?? INTERVAL_DESCRIPTIONS[code])
+        : INTERVAL_DESCRIPTIONS[code],
     range,
   };
-}
-
-// "This month"/"past year" only make sense for the current window; once
-// paged away via the period arrows, show the concrete month(s) instead.
-const MONTH_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" });
-
-function formatOffsetPeriodDescription(range: DateRange): string {
-  const from = MONTH_YEAR_FORMAT.format(range.from);
-  const to = MONTH_YEAR_FORMAT.format(range.to);
-  return from === to ? from : `${from} – ${to}`;
 }
 
 function insightPeriodForDashboardInterval(code: SpendingDashboardPeriod): ReportsPeriod {
@@ -907,25 +904,14 @@ export default function SpendingTabContent() {
                   : ""}
               </span>
               {selection.kind === "period" && (
-                <span className="ml-0.5 inline-flex items-center gap-0.5 normal-case">
-                  <button
-                    type="button"
-                    onClick={() => handlePeriodStep(1)}
-                    className="hover:bg-muted hover:text-foreground flex h-5 w-5 items-center justify-center rounded-full transition-colors"
-                    aria-label={t("spending:tabContent.previousPeriod")}
-                  >
-                    <Icons.ChevronLeft className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handlePeriodStep(-1)}
-                    disabled={selection.offset === 0}
-                    className="hover:bg-muted hover:text-foreground disabled:text-muted-foreground/30 flex h-5 w-5 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed"
-                    aria-label={t("spending:tabContent.nextPeriod")}
-                  >
-                    <Icons.ChevronRight className="h-3 w-3" />
-                  </button>
-                </span>
+                <PeriodStepArrows
+                  className="ml-0.5"
+                  onPrevious={() => handlePeriodStep(1)}
+                  onNext={() => handlePeriodStep(-1)}
+                  nextDisabled={selection.offset === 0}
+                  previousLabel={t("ui:interval.previousPeriod")}
+                  nextLabel={t("ui:interval.nextPeriod")}
+                />
               )}
             </div>
             <Balance

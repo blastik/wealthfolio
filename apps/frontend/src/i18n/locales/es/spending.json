@@ -823,9 +823,7 @@
     "interval3M": "últimos 3 meses",
     "interval6M": "últimos 6 meses",
     "intervalYtd": "en lo que va de año",
-    "interval1Y": "último año",
-    "previousPeriod": "Periodo anterior",
-    "nextPeriod": "Periodo siguiente"
+    "interval1Y": "último año"
   },
   "budgetEditor": {
     "newGroup": "Nuevo grupo",
