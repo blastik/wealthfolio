@@ -242,6 +242,12 @@ export interface ActivityDetails {
   counterpartAmount?: string | null;
   counterpartCurrency?: string | null;
   counterpartFxRate?: string | null;
+  exchangeOutId?: string;
+  exchangeInId?: string;
+  counterpartAssetId?: string | null;
+  counterpartAssetSymbol?: string | null;
+  counterpartQuantity?: string | null;
+  counterpartFee?: string | null;
   subRows?: ActivityDetails[];
 }
 
@@ -360,6 +366,11 @@ export interface InternalTransferPairRequest {
 export interface InternalTransferPairResponse {
   transferOut: Activity;
   transferIn: Activity;
+}
+
+export interface InternalExchangePairResponse {
+  exchangeOut: Activity;
+  exchangeIn: Activity;
 }
 
 export interface TransferMatchCandidateRequest {

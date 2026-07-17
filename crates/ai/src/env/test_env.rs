@@ -14,9 +14,10 @@ use wealthfolio_core::{
         Activity, ActivityBulkMutationRequest, ActivityBulkMutationResult, ActivityDetails,
         ActivityImport, ActivitySearchResponse, ActivitySearchResponseMeta, ActivityServiceTrait,
         ActivityUpdate, BrokerSyncProfileData, ImportAssetCandidate, ImportAssetPreviewItem,
-        ImportMappingData, ImportTemplateData, ImportTemplateScope, InternalTransferPairRequest,
-        InternalTransferPairResponse, NewActivity, SaveBrokerSyncProfileRulesRequest, Sort,
-        TransferMatchCandidate, TransferMatchCandidateRequest,
+        ImportMappingData, ImportTemplateData, ImportTemplateScope, InternalExchangePairResponse,
+        InternalTransferPairRequest, InternalTransferPairResponse, NewActivity,
+        SaveBrokerSyncProfileRulesRequest, Sort, TransferMatchCandidate,
+        TransferMatchCandidateRequest,
     },
     assets::{
         Asset, AssetMetadata, AssetResolutionInput, AssetResolutionOutput, AssetServiceTrait,
@@ -484,6 +485,13 @@ impl ActivityServiceTrait for MockActivityService {
         _activity_id: String,
     ) -> CoreResult<InternalTransferPairResponse> {
         unimplemented!("MockActivityService::get_transfer_pair_for_activity")
+    }
+
+    fn get_exchange_pair_for_activity(
+        &self,
+        _activity_id: String,
+    ) -> CoreResult<InternalExchangePairResponse> {
+        unimplemented!("MockActivityService::get_exchange_pair_for_activity")
     }
 
     async fn save_internal_transfer_pair(

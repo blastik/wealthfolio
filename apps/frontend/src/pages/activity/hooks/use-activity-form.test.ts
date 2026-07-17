@@ -412,4 +412,108 @@ describe("useActivityForm", () => {
     expect(outActivity.currency).toBe("USD");
     expect(inActivity.currency).toBe("USD");
   });
+
+  it("updates both existing legs when editing an exchange pair", async () => {
+    const { result } = renderHook(() =>
+      useActivityForm({
+        accounts,
+        selectedType: "EXCHANGE",
+        activity: {
+          id: "exchange-out-id",
+          activityType: ActivityType.ADJUSTMENT,
+          subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+          exchangeOutId: "exchange-out-id",
+          exchangeInId: "exchange-in-id",
+        },
+      }),
+    );
+
+    const formData = {
+      accountId: "acc-usd",
+      activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      fromAssetId: "AAPL",
+      fromExistingAssetId: null,
+      fromQuantity: 3,
+      fromCurrency: "USD",
+      fromQuoteMode: "MARKET",
+      fromExchangeMic: null,
+      fromSymbolQuoteCcy: "USD",
+      fromSymbolInstrumentType: "EQUITY",
+      fromAssetMetadata: undefined,
+      toAssetId: "GOOGL",
+      toExistingAssetId: null,
+      toQuantity: 2,
+      toCurrency: "USD",
+      toQuoteMode: "MARKET",
+      toExchangeMic: null,
+      toSymbolQuoteCcy: "USD",
+      toSymbolInstrumentType: "EQUITY",
+      toAssetMetadata: undefined,
+      fee: 5,
+      comment: "corrected quantity",
+    } as ActivityFormValues;
+
+    await act(async () => {
+      await result.current.handleSubmit(formData);
+    });
+
+    expect(mutationMocks.saveMutateAsync).toHaveBeenCalledTimes(1);
+    expect(mutationMocks.saveMutateAsync).toHaveBeenCalledWith({
+      updates: [
+        expect.objectContaining({
+          id: "exchange-out-id",
+          accountId: "acc-usd",
+          activityType: ActivityType.ADJUSTMENT,
+          subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+          quantity: 3,
+          currency: "USD",
+        }),
+        expect.objectContaining({
+          id: "exchange-in-id",
+          accountId: "acc-usd",
+          activityType: ActivityType.ADJUSTMENT,
+          subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+          quantity: 2,
+          currency: "USD",
+          fee: 5,
+        }),
+      ],
+    });
+  });
+
+  it("throws when editing an exchange with a missing counterpart leg id", async () => {
+    const { result } = renderHook(() =>
+      useActivityForm({
+        accounts,
+        selectedType: "EXCHANGE",
+        activity: {
+          id: "exchange-out-id",
+          activityType: ActivityType.ADJUSTMENT,
+          subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+          exchangeOutId: "exchange-out-id",
+          // exchangeInId intentionally missing
+        },
+      }),
+    );
+
+    const formData = {
+      accountId: "acc-usd",
+      activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      fromAssetId: "AAPL",
+      fromQuantity: 3,
+      fromCurrency: "USD",
+      toAssetId: "GOOGL",
+      toQuantity: 2,
+      toCurrency: "USD",
+      fee: 0,
+      comment: null,
+    } as ActivityFormValues;
+
+    await act(async () => {
+      await result.current.handleSubmit(formData);
+    });
+
+    expect(mutationMocks.saveMutateAsync).not.toHaveBeenCalled();
+    expect(adapterMocks.loggerError).toHaveBeenCalled();
+  });
 });

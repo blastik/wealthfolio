@@ -478,19 +478,61 @@ export const ACTIVITY_FORM_CONFIG: Record<
   EXCHANGE: {
     component: ExchangeForm as ComponentType<ActivityFormComponentProps<ActivityFormValues>>,
     activityType: ActivityType.ADJUSTMENT,
-    getDefaults: (_activity, accounts) => ({
-      accountId: accounts.length === 1 ? accounts[0].value : "",
-      activityDate: new Date(),
-      fromAssetId: "",
-      fromQuantity: undefined,
-      toAssetId: "",
-      toQuantity: undefined,
-      fee: 0,
-      comment: null,
-    }),
-    // Submission is handled specially in useActivityForm (like internal
-    // TRANSFER pairs) — this leg-1 payload exists to satisfy the config shape
-    // and is not the actual submission path.
+    getDefaults: (activity, accounts) => {
+      const isEditingOut = activity?.subtype === ACTIVITY_SUBTYPES.EXCHANGE_OUT;
+      const isEditingIn = activity?.subtype === ACTIVITY_SUBTYPES.EXCHANGE_IN;
+
+      if (isEditingOut || isEditingIn) {
+        // openForm (use-activity-action-dialogs.ts) has already merged the
+        // counterpart leg's data onto `activity` for editing. Map "own" vs
+        // "counterpart" onto "from" (closing) vs "to" (opening) depending on
+        // which leg the user actually clicked to edit.
+        const own = {
+          assetId: activity?.assetSymbol ?? activity?.assetId ?? "",
+          existingAssetId: activity?.assetId ?? null,
+          quantity: absNum(activity?.quantity),
+          currency: activity?.currency,
+        };
+        const counterpart = {
+          assetId: activity?.counterpartAssetSymbol ?? activity?.counterpartAssetId ?? "",
+          existingAssetId: activity?.counterpartAssetId ?? null,
+          quantity: absNum(activity?.counterpartQuantity),
+          currency: activity?.counterpartCurrency ?? undefined,
+        };
+        const from = isEditingOut ? own : counterpart;
+        const to = isEditingOut ? counterpart : own;
+
+        return {
+          accountId: activity?.accountId ?? "",
+          activityDate: activity?.date ? new Date(activity.date) : new Date(),
+          fromAssetId: from.assetId,
+          fromExistingAssetId: from.existingAssetId,
+          fromQuantity: from.quantity,
+          fromCurrency: from.currency,
+          toAssetId: to.assetId,
+          toExistingAssetId: to.existingAssetId,
+          toQuantity: to.quantity,
+          toCurrency: to.currency,
+          fee: (isEditingOut ? absNum(activity?.counterpartFee) : absNum(activity?.fee)) ?? 0,
+          comment: activity?.comment ?? null,
+        };
+      }
+
+      return {
+        accountId: accounts.length === 1 ? accounts[0].value : "",
+        activityDate: new Date(),
+        fromAssetId: "",
+        fromQuantity: undefined,
+        toAssetId: "",
+        toQuantity: undefined,
+        fee: 0,
+        comment: null,
+      };
+    },
+    // Submission (both create and edit) is handled specially in
+    // useActivityForm (like internal TRANSFER pairs) — this leg-1 payload
+    // exists only to satisfy the config shape and is not the actual
+    // submission path.
     toPayload: (data) => {
       const d = data as ExchangeFormValues;
       return {
