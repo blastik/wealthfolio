@@ -1,6 +1,6 @@
 import { getTransferPairForActivity, logger } from "@/adapters";
 import { buildAssetResolutionInput } from "@/lib/asset-resolution-input";
-import { ActivityType } from "@/lib/constants";
+import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
 import { generateId } from "@/lib/id";
 import type { ActivityCreate, ActivityDetails, ActivityUpdate } from "@/lib/types";
 import { useCallback, useMemo } from "react";
@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import type { AccountSelectOption } from "../components/forms/fields";
 import type { NewActivityFormValues } from "../components/forms/schemas";
 import type { TransferFormValues } from "../components/forms/transfer-form";
+import type { ExchangeFormValues } from "../components/forms/exchange-form";
 import {
   ACTIVITY_FORM_CONFIG,
   type ActivityFormValues,
@@ -17,6 +18,10 @@ import { useActivityMutations } from "./use-activity-mutations";
 
 function generateSourceGroupId(): string {
   return generateId("wf-transfer");
+}
+
+function generateExchangeGroupId(): string {
+  return generateId("wf-exchange");
 }
 
 function extractErrorMessage(error: unknown): string {
@@ -325,6 +330,67 @@ export function useActivityForm({
           } else {
             await addActivityMutation.mutateAsync(submitData);
           }
+          return;
+        }
+
+        // Handle in-kind asset exchanges specially - need to create two paired
+        // ADJUSTMENT activities (EXCHANGE_OUT/EXCHANGE_IN), same account,
+        // sharing a source group id, like the internal securities-transfer case
+        // above. Editing an existing exchange pair is not yet supported.
+        if (selectedType === "EXCHANGE" && !isEditing) {
+          const exchangeData = formData as ExchangeFormValues;
+          const account = accounts.find((a) => a.value === exchangeData.accountId);
+          const groupId = generateExchangeGroupId();
+          const sharedFields = {
+            accountId: exchangeData.accountId,
+            activityDate: exchangeData.activityDate,
+            comment: exchangeData.comment,
+            sourceGroupId: groupId,
+          };
+
+          const fromAsset = buildAssetResolutionInput({
+            id: exchangeData.fromExistingAssetId,
+            symbol: exchangeData.fromAssetId,
+            exchangeMic: exchangeData.fromExchangeMic,
+            quoteMode: exchangeData.fromQuoteMode,
+            quoteCcy: exchangeData.fromSymbolQuoteCcy,
+            instrumentType: exchangeData.fromSymbolInstrumentType,
+            name: exchangeData.fromAssetMetadata?.name,
+            kind: exchangeData.fromAssetMetadata?.kind,
+          });
+          const toAsset = buildAssetResolutionInput({
+            id: exchangeData.toExistingAssetId,
+            symbol: exchangeData.toAssetId,
+            exchangeMic: exchangeData.toExchangeMic,
+            quoteMode: exchangeData.toQuoteMode,
+            quoteCcy: exchangeData.toSymbolQuoteCcy,
+            instrumentType: exchangeData.toSymbolInstrumentType,
+            name: exchangeData.toAssetMetadata?.name,
+            kind: exchangeData.toAssetMetadata?.kind,
+          });
+
+          const exchangeOutActivity: ActivityCreate = {
+            ...sharedFields,
+            activityType: ActivityType.ADJUSTMENT,
+            subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+            asset: fromAsset,
+            quantity: exchangeData.fromQuantity,
+            currency: exchangeData.fromCurrency?.trim() || account?.currency,
+          };
+
+          const exchangeInActivity: ActivityCreate = {
+            ...sharedFields,
+            activityType: ActivityType.ADJUSTMENT,
+            subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+            asset: toAsset,
+            quantity: exchangeData.toQuantity,
+            currency: exchangeData.toCurrency?.trim() || account?.currency,
+            fee: exchangeData.fee || undefined,
+          };
+
+          await saveActivitiesMutation.mutateAsync({
+            creates: [exchangeOutActivity, exchangeInActivity],
+          });
           return;
         }
 

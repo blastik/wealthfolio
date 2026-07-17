@@ -23,7 +23,8 @@ export type SecondaryActivityType =
   | typeof CanonicalActivityType.SPLIT
   | typeof CanonicalActivityType.FEE
   | typeof CanonicalActivityType.INTEREST
-  | typeof CanonicalActivityType.TAX;
+  | typeof CanonicalActivityType.TAX
+  | "EXCHANGE";
 export type ActivityType = PrimaryActivityType | SecondaryActivityType;
 
 interface ActivityTypeConfig<T extends string> {
@@ -54,6 +55,7 @@ const SECONDARY_ACTIVITY_TYPES: ActivityTypeConfig<SecondaryActivityType>[] = [
   { value: CanonicalActivityType.FEE, labelKey: "activity:type_fee", icon: "Receipt" },
   { value: CanonicalActivityType.INTEREST, labelKey: "activity:type_interest", icon: "Percent" },
   { value: CanonicalActivityType.TAX, labelKey: "activity:type_tax", icon: "ReceiptText" },
+  { value: "EXCHANGE", labelKey: "activity:picker.exchange", icon: "RefreshCw" },
 ];
 
 const ALL_ACTIVITY_TYPES = [...PRIMARY_ACTIVITY_TYPES, ...SECONDARY_ACTIVITY_TYPES];

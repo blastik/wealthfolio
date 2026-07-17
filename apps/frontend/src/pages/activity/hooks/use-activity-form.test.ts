@@ -1,4 +1,4 @@
-import { ActivityType } from "@/lib/constants";
+import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountSelectOption } from "../components/forms/fields";
@@ -298,5 +298,118 @@ describe("useActivityForm", () => {
     expect(mutationMocks.unlinkMutateAsync.mock.invocationCallOrder[0]).toBeLessThan(
       mutationMocks.updateMutateAsync.mock.invocationCallOrder[0],
     );
+  });
+
+  it("creates a paired EXCHANGE_OUT/EXCHANGE_IN activity sharing a source group id", async () => {
+    const { result } = renderHook(() =>
+      useActivityForm({
+        accounts,
+        selectedType: "EXCHANGE",
+      }),
+    );
+
+    const formData = {
+      accountId: "acc-usd",
+      activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      fromAssetId: "AAPL",
+      fromExistingAssetId: null,
+      fromQuantity: 2,
+      fromCurrency: "USD",
+      fromQuoteMode: "MARKET",
+      fromExchangeMic: null,
+      fromSymbolQuoteCcy: "USD",
+      fromSymbolInstrumentType: "EQUITY",
+      fromAssetMetadata: undefined,
+      toAssetId: "GOOGL",
+      toExistingAssetId: null,
+      toQuantity: 1,
+      toCurrency: "USD",
+      toQuoteMode: "MARKET",
+      toExchangeMic: null,
+      toSymbolQuoteCcy: "USD",
+      toSymbolInstrumentType: "EQUITY",
+      toAssetMetadata: undefined,
+      fee: 0,
+      comment: "fund switch",
+    } as ActivityFormValues;
+
+    await act(async () => {
+      await result.current.handleSubmit(formData);
+    });
+
+    expect(mutationMocks.saveMutateAsync).toHaveBeenCalledTimes(1);
+    const call = mutationMocks.saveMutateAsync.mock.calls[0][0] as {
+      creates: Record<string, unknown>[];
+    };
+    expect(call.creates).toHaveLength(2);
+
+    const [outActivity, inActivity] = call.creates;
+    expect(outActivity).toEqual(
+      expect.objectContaining({
+        accountId: "acc-usd",
+        activityType: ActivityType.ADJUSTMENT,
+        subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+        quantity: 2,
+        currency: "USD",
+      }),
+    );
+    expect(inActivity).toEqual(
+      expect.objectContaining({
+        accountId: "acc-usd",
+        activityType: ActivityType.ADJUSTMENT,
+        subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+        quantity: 1,
+        currency: "USD",
+      }),
+    );
+    expect(outActivity.sourceGroupId).toBeTruthy();
+    expect(outActivity.sourceGroupId).toBe(inActivity.sourceGroupId);
+    expect(outActivity.asset).toEqual(expect.objectContaining({ symbol: "AAPL" }));
+    expect(inActivity.asset).toEqual(expect.objectContaining({ symbol: "GOOGL" }));
+  });
+
+  it("falls back to account currency when EXCHANGE leg currency is empty", async () => {
+    const { result } = renderHook(() =>
+      useActivityForm({
+        accounts,
+        selectedType: "EXCHANGE",
+      }),
+    );
+
+    const formData = {
+      accountId: "acc-usd",
+      activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      fromAssetId: "AAPL",
+      fromExistingAssetId: null,
+      fromQuantity: 2,
+      fromCurrency: "   ",
+      fromQuoteMode: "MARKET",
+      fromExchangeMic: null,
+      fromSymbolQuoteCcy: null,
+      fromSymbolInstrumentType: null,
+      fromAssetMetadata: undefined,
+      toAssetId: "GOOGL",
+      toExistingAssetId: null,
+      toQuantity: 1,
+      toCurrency: "",
+      toQuoteMode: "MARKET",
+      toExchangeMic: null,
+      toSymbolQuoteCcy: null,
+      toSymbolInstrumentType: null,
+      toAssetMetadata: undefined,
+      fee: 0,
+      comment: null,
+    } as ActivityFormValues;
+
+    await act(async () => {
+      await result.current.handleSubmit(formData);
+    });
+
+    const call = mutationMocks.saveMutateAsync.mock.calls[0][0] as {
+      creates: Record<string, unknown>[];
+    };
+    const [outActivity, inActivity] = call.creates;
+    expect(outActivity.currency).toBe("USD");
+    expect(inActivity.currency).toBe("USD");
   });
 });

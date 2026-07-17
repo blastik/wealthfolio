@@ -15,6 +15,7 @@ import { DepositForm, type DepositFormValues } from "../components/forms/deposit
 import { WithdrawalForm, type WithdrawalFormValues } from "../components/forms/withdrawal-form";
 import { DividendForm, type DividendFormValues } from "../components/forms/dividend-form";
 import { TransferForm, type TransferFormValues } from "../components/forms/transfer-form";
+import { ExchangeForm, type ExchangeFormValues } from "../components/forms/exchange-form";
 import { SplitForm, type SplitFormValues } from "../components/forms/split-form";
 import { FeeForm, type FeeFormValues } from "../components/forms/fee-form";
 import { InterestForm, type InterestFormValues } from "../components/forms/interest-form";
@@ -30,6 +31,7 @@ export type PickerActivityType =
   | typeof ActivityType.WITHDRAWAL
   | typeof ActivityType.DIVIDEND
   | "TRANSFER"
+  | "EXCHANGE"
   | typeof ActivityType.SPLIT
   | typeof ActivityType.FEE
   | typeof ActivityType.INTEREST
@@ -43,6 +45,7 @@ export type ActivityFormValues =
   | WithdrawalFormValues
   | DividendFormValues
   | TransferFormValues
+  | ExchangeFormValues
   | SplitFormValues
   | FeeFormValues
   | InterestFormValues
@@ -468,6 +471,36 @@ export const ACTIVITY_FORM_CONFIG: Record<
             }
           : undefined,
         ...(d.isExternal && { metadata: { flow: { is_external: true } } }),
+      };
+    },
+  },
+
+  EXCHANGE: {
+    component: ExchangeForm as ComponentType<ActivityFormComponentProps<ActivityFormValues>>,
+    activityType: ActivityType.ADJUSTMENT,
+    getDefaults: (_activity, accounts) => ({
+      accountId: accounts.length === 1 ? accounts[0].value : "",
+      activityDate: new Date(),
+      fromAssetId: "",
+      fromQuantity: undefined,
+      toAssetId: "",
+      toQuantity: undefined,
+      fee: 0,
+      comment: null,
+    }),
+    // Submission is handled specially in useActivityForm (like internal
+    // TRANSFER pairs) — this leg-1 payload exists to satisfy the config shape
+    // and is not the actual submission path.
+    toPayload: (data) => {
+      const d = data as ExchangeFormValues;
+      return {
+        accountId: d.accountId,
+        activityDate: d.activityDate,
+        assetId: d.fromAssetId,
+        quantity: d.fromQuantity,
+        subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+        comment: d.comment,
+        currency: d.fromCurrency,
       };
     },
   },
