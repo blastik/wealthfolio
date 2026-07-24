@@ -248,6 +248,7 @@ export interface ActivityDetails {
   counterpartAssetSymbol?: string | null;
   counterpartQuantity?: string | null;
   counterpartFee?: string | null;
+  counterpartActivityDate?: string | null;
   subRows?: ActivityDetails[];
 }
 

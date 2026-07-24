@@ -502,9 +502,17 @@ export const ACTIVITY_FORM_CONFIG: Record<
         const from = isEditingOut ? own : counterpart;
         const to = isEditingOut ? counterpart : own;
 
+        const ownDate = activity?.date ? new Date(activity.date) : new Date();
+        const counterpartDate = activity?.counterpartActivityDate
+          ? new Date(activity.counterpartActivityDate)
+          : ownDate;
+        const fromDate = isEditingOut ? ownDate : counterpartDate;
+        const toDate = isEditingOut ? counterpartDate : ownDate;
+
         return {
           accountId: activity?.accountId ?? "",
-          activityDate: activity?.date ? new Date(activity.date) : new Date(),
+          activityDate: fromDate,
+          toActivityDate: toDate,
           fromAssetId: from.assetId,
           fromExistingAssetId: from.existingAssetId,
           fromQuantity: from.quantity,
@@ -518,9 +526,11 @@ export const ACTIVITY_FORM_CONFIG: Record<
         };
       }
 
+      const today = new Date();
       return {
         accountId: accounts.length === 1 ? accounts[0].value : "",
-        activityDate: new Date(),
+        activityDate: today,
+        toActivityDate: today,
         fromAssetId: "",
         fromQuantity: undefined,
         toAssetId: "",

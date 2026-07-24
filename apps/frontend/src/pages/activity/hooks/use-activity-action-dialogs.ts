@@ -85,6 +85,7 @@ export function useActivityActionDialogs() {
           counterpartQuantity: counterpart.quantity ?? null,
           counterpartCurrency: counterpart.currency,
           counterpartFee: counterpart.fee ?? null,
+          counterpartActivityDate: counterpart.activityDate ?? null,
         });
         setFormOpen(true);
         return;

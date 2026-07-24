@@ -367,7 +367,6 @@ export function useActivityForm({
 
           const sharedFields = {
             accountId: exchangeData.accountId,
-            activityDate: exchangeData.activityDate,
             comment: exchangeData.comment,
           };
 
@@ -385,6 +384,7 @@ export function useActivityForm({
                   id: exchangeOutId,
                   activityType: ActivityType.ADJUSTMENT,
                   subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+                  activityDate: exchangeData.activityDate,
                   asset: fromAsset,
                   quantity: exchangeData.fromQuantity,
                   currency: fromCurrency,
@@ -394,6 +394,7 @@ export function useActivityForm({
                   id: exchangeInId,
                   activityType: ActivityType.ADJUSTMENT,
                   subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+                  activityDate: exchangeData.toActivityDate,
                   asset: toAsset,
                   quantity: exchangeData.toQuantity,
                   currency: toCurrency,
@@ -412,6 +413,7 @@ export function useActivityForm({
                 sourceGroupId: groupId,
                 activityType: ActivityType.ADJUSTMENT,
                 subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+                activityDate: exchangeData.activityDate,
                 asset: fromAsset,
                 quantity: exchangeData.fromQuantity,
                 currency: fromCurrency,
@@ -421,6 +423,7 @@ export function useActivityForm({
                 sourceGroupId: groupId,
                 activityType: ActivityType.ADJUSTMENT,
                 subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+                activityDate: exchangeData.toActivityDate,
                 asset: toAsset,
                 quantity: exchangeData.toQuantity,
                 currency: toCurrency,

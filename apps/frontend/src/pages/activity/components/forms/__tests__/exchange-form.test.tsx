@@ -3,6 +3,24 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ExchangeForm } from "../exchange-form";
 import type { AccountSelectOption } from "../fields";
+import type { Holding } from "@/lib/types";
+
+interface UseHoldingsResult {
+  holdings: Holding[];
+  isLoading: boolean;
+}
+
+const holdingsHook = vi.hoisted(() => ({
+  useHoldings: vi.fn<() => UseHoldingsResult>(() => ({
+    holdings: [],
+    isLoading: false,
+  })),
+}));
+
+// Mock the useHoldings hook (needs QueryClientProvider otherwise)
+vi.mock("@/hooks/use-holdings", () => ({
+  useHoldings: holdingsHook.useHoldings,
+}));
 
 // Mock the fields components
 vi.mock("../fields", () => ({
@@ -94,6 +112,7 @@ vi.mock("@wealthfolio/ui/components/ui/icons", () => ({
     Spinner: () => <span data-testid="spinner">Loading...</span>,
     Check: () => <span data-testid="check-icon">Check</span>,
     Plus: () => <span data-testid="plus-icon">Plus</span>,
+    AlertTriangle: () => <span data-testid="alert-triangle-icon">!</span>,
   },
 }));
 
@@ -102,12 +121,24 @@ const mockAccounts: AccountSelectOption[] = [
   { value: "acc-2", label: "Investment Account", currency: "EUR" },
 ];
 
+function createHolding(symbol: string, quantity: number, assetId = symbol): Holding {
+  return {
+    id: `SEC-acc-1-${assetId}`,
+    instrument: {
+      id: assetId,
+      symbol,
+    },
+    quantity,
+  } as Holding;
+}
+
 describe("ExchangeForm", () => {
   const mockOnSubmit = vi.fn();
   const mockOnCancel = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
+    holdingsHook.useHoldings.mockReturnValue({ holdings: [], isLoading: false });
   });
 
   describe("Render Tests", () => {
@@ -116,6 +147,15 @@ describe("ExchangeForm", () => {
 
       expect(screen.getByTestId("select-accountId")).toBeInTheDocument();
       expect(screen.getByTestId("date-picker-activityDate")).toBeInTheDocument();
+    });
+
+    it("renders distinct closing and opening date pickers", () => {
+      render(<ExchangeForm accounts={mockAccounts} onSubmit={mockOnSubmit} />);
+
+      expect(screen.getByTestId("date-picker-activityDate")).toBeInTheDocument();
+      expect(screen.getByTestId("date-picker-toActivityDate")).toBeInTheDocument();
+      expect(screen.getByText("Closing Date")).toBeInTheDocument();
+      expect(screen.getByText("Opening Date")).toBeInTheDocument();
     });
 
     it("renders distinct closing and opening asset pickers", () => {
@@ -203,6 +243,54 @@ describe("ExchangeForm", () => {
 
       expect(container.querySelector("form")).toBeInTheDocument();
       expect(screen.getAllByTestId("form-section").length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("Holdings validation", () => {
+    it("blocks submission when exchanging out more shares than currently held", async () => {
+      holdingsHook.useHoldings.mockReturnValue({
+        holdings: [createHolding("AAPL", 5, "aapl-id")],
+        isLoading: false,
+      });
+      const user = userEvent.setup();
+      render(
+        <ExchangeForm
+          accounts={mockAccounts}
+          onSubmit={mockOnSubmit}
+          defaultValues={{
+            accountId: "acc-1",
+            fromAssetId: "AAPL",
+            fromQuantity: 10,
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /add exchange/i }));
+
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
+    it("allows submission when exchanging out no more than currently held", async () => {
+      holdingsHook.useHoldings.mockReturnValue({
+        holdings: [createHolding("AAPL", 5, "aapl-id")],
+        isLoading: false,
+      });
+      const user = userEvent.setup();
+      render(
+        <ExchangeForm
+          accounts={mockAccounts}
+          onSubmit={mockOnSubmit}
+          defaultValues={{
+            accountId: "acc-1",
+            fromAssetId: "AAPL",
+            fromQuantity: 5,
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /add exchange/i }));
+
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
     });
   });
 });

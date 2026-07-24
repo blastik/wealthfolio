@@ -31,6 +31,7 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
       counterpartQuantity: "2",
       counterpartCurrency: "USD",
       counterpartFee: "5",
+      counterpartActivityDate: "2026-02-03T10:00:00.000Z",
       comment: "note",
     };
 
@@ -45,6 +46,10 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
     expect(defaults.toAssetId).toBe("GOOGL");
     expect(defaults.toExistingAssetId).toBe("googl-id");
     expect(defaults.toQuantity).toBe(2);
+    // Editing the OUT leg: activityDate is this (own) leg's date, toActivityDate
+    // is the counterpart (IN) leg's own date.
+    expect(defaults.activityDate).toEqual(new Date("2026-02-01T10:00:00.000Z"));
+    expect(defaults.toActivityDate).toEqual(new Date("2026-02-03T10:00:00.000Z"));
     // Editing the OUT leg: the fee belongs to the counterpart (IN) leg.
     expect(defaults.fee).toBe(5);
     expect(defaults.comment).toBe("note");
@@ -53,7 +58,7 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
   it("maps own asset to 'to' and counterpart to 'from' when editing the EXCHANGE_IN leg", () => {
     const activity: Partial<ActivityDetails> = {
       accountId: "acc-1",
-      date: new Date("2026-02-01T10:00:00.000Z"),
+      date: new Date("2026-02-03T10:00:00.000Z"),
       subtype: "EXCHANGE_IN",
       assetId: "googl-id",
       assetSymbol: "GOOGL",
@@ -64,6 +69,7 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
       counterpartAssetSymbol: "AAPL",
       counterpartQuantity: "3",
       counterpartCurrency: "USD",
+      counterpartActivityDate: "2026-02-01T10:00:00.000Z",
     };
 
     const defaults = ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults(activity, accounts) as Record<
@@ -77,6 +83,10 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
     expect(defaults.toAssetId).toBe("GOOGL");
     expect(defaults.toExistingAssetId).toBe("googl-id");
     expect(defaults.toQuantity).toBe(2);
+    // Editing the IN leg directly: activityDate (from/closing) comes from the
+    // counterpart (OUT) leg, toActivityDate is this (own) leg's own date.
+    expect(defaults.activityDate).toEqual(new Date("2026-02-01T10:00:00.000Z"));
+    expect(defaults.toActivityDate).toEqual(new Date("2026-02-03T10:00:00.000Z"));
     // Editing the IN leg directly: its own fee is used.
     expect(defaults.fee).toBe(5);
   });

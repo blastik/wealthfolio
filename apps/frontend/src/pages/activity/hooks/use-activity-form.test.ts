@@ -311,6 +311,7 @@ describe("useActivityForm", () => {
     const formData = {
       accountId: "acc-usd",
       activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      toActivityDate: new Date("2026-02-03T10:00:00.000Z"),
       fromAssetId: "AAPL",
       fromExistingAssetId: null,
       fromQuantity: 2,
@@ -349,6 +350,7 @@ describe("useActivityForm", () => {
         accountId: "acc-usd",
         activityType: ActivityType.ADJUSTMENT,
         subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+        activityDate: new Date("2026-02-01T10:00:00.000Z"),
         quantity: 2,
         currency: "USD",
       }),
@@ -358,6 +360,7 @@ describe("useActivityForm", () => {
         accountId: "acc-usd",
         activityType: ActivityType.ADJUSTMENT,
         subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+        activityDate: new Date("2026-02-03T10:00:00.000Z"),
         quantity: 1,
         currency: "USD",
       }),
@@ -379,6 +382,7 @@ describe("useActivityForm", () => {
     const formData = {
       accountId: "acc-usd",
       activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      toActivityDate: new Date("2026-02-01T10:00:00.000Z"),
       fromAssetId: "AAPL",
       fromExistingAssetId: null,
       fromQuantity: 2,
@@ -431,6 +435,7 @@ describe("useActivityForm", () => {
     const formData = {
       accountId: "acc-usd",
       activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      toActivityDate: new Date("2026-02-04T10:00:00.000Z"),
       fromAssetId: "AAPL",
       fromExistingAssetId: null,
       fromQuantity: 3,
@@ -465,6 +470,7 @@ describe("useActivityForm", () => {
           accountId: "acc-usd",
           activityType: ActivityType.ADJUSTMENT,
           subtype: ACTIVITY_SUBTYPES.EXCHANGE_OUT,
+          activityDate: new Date("2026-02-01T10:00:00.000Z"),
           quantity: 3,
           currency: "USD",
         }),
@@ -473,6 +479,7 @@ describe("useActivityForm", () => {
           accountId: "acc-usd",
           activityType: ActivityType.ADJUSTMENT,
           subtype: ACTIVITY_SUBTYPES.EXCHANGE_IN,
+          activityDate: new Date("2026-02-04T10:00:00.000Z"),
           quantity: 2,
           currency: "USD",
           fee: 5,
@@ -499,6 +506,7 @@ describe("useActivityForm", () => {
     const formData = {
       accountId: "acc-usd",
       activityDate: new Date("2026-02-01T10:00:00.000Z"),
+      toActivityDate: new Date("2026-02-01T10:00:00.000Z"),
       fromAssetId: "AAPL",
       fromQuantity: 3,
       fromCurrency: "USD",
