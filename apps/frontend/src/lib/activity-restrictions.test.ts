@@ -93,6 +93,12 @@ describe("canAddHoldings", () => {
     expect(canAddHoldings(makeAccount({ trackingMode: "HOLDINGS" }))).toBe(true);
     expect(canAddHoldings(makeAccount({ trackingMode: "TRANSACTIONS" }))).toBe(false);
   });
+
+  it("keeps connected holdings read-only outside remediation", () => {
+    expect(
+      canAddHoldings(makeAccount({ trackingMode: "HOLDINGS", providerAccountId: "provider-123" })),
+    ).toBe(false);
+  });
 });
 
 describe("canImportCSV", () => {
