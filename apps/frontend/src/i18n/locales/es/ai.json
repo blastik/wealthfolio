@@ -294,6 +294,7 @@
     "failedApply": "No se pudieron aplicar las categorías.",
     "partialApplyFailed_one": "No se pudo categorizar {{count}} transacción: {{reason}}",
     "partialApplyFailed_other": "No se pudieron categorizar {{count}} transacciones: {{reason}}",
+    "partialApplyFailed_many": "No se pudieron categorizar {{count}} transacciones: {{reason}}",
     "transactionsCategorized_one": "{{count}} transacción categorizada",
     "transactionsCategorized_other": "{{count}} transacciones categorizadas",
     "transactionsCategorized_many": "{{count}} transacciones categorizadas",
