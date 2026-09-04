@@ -448,6 +448,7 @@ pub fn run() {
             commands::settings::is_auto_update_check_enabled,
             commands::settings::update_settings,
             commands::settings::get_latest_exchange_rates,
+            commands::settings::get_exchange_rates_for_dates,
             commands::settings::update_exchange_rate,
             commands::settings::add_exchange_rate,
             commands::settings::delete_exchange_rate,
@@ -467,6 +468,7 @@ pub fn run() {
             commands::spending::list_categorization_rules,
             commands::spending::create_categorization_rule,
             commands::spending::update_categorization_rule,
+            commands::spending::upsert_categorization_rule,
             commands::spending::delete_categorization_rule,
             commands::spending::rerun_categorization_rules,
             commands::spending::list_rule_presets,
@@ -567,6 +569,11 @@ pub fn run() {
             commands::asset::update_quote_mode,
             commands::asset::delete_asset,
             commands::asset::create_asset,
+            // Asset logo commands
+            commands::asset_logo::get_asset_logo,
+            commands::asset_logo::list_asset_logos,
+            commands::asset_logo::upsert_asset_logo,
+            commands::asset_logo::delete_asset_logo,
             // Alternative asset commands
             commands::alternative_assets::create_alternative_asset,
             commands::alternative_assets::update_alternative_asset_valuation,

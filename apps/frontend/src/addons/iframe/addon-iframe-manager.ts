@@ -310,7 +310,9 @@ function getParkingRoot() {
   return root;
 }
 
-const ALLOWED_API_METHODS = new Set([
+// Exported so tests can assert every host-API bridge method is reachable —
+// see the drift check in addons/type-bridge.test.ts.
+export const ALLOWED_API_METHODS = new Set([
   "accounts.getAll",
   "accounts.create",
   "portfolio.getHoldings",
@@ -345,6 +347,13 @@ const ALLOWED_API_METHODS = new Set([
   "exchangeRates.getAll",
   "exchangeRates.update",
   "exchangeRates.add",
+  "exchangeRates.getRatesForDates",
+  "spending.isEnabled",
+  "spending.getCategories",
+  "spending.getRules",
+  "spending.saveRule",
+  "spending.deleteRule",
+  "spending.rerunRules",
   "contributionLimits.getAll",
   "contributionLimits.create",
   "contributionLimits.update",
