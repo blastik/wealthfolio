@@ -327,43 +327,6 @@ fn get_app_data_dir(handle: &AppHandle) -> Result<String, Box<dyn std::error::Er
     Ok(handle.path().app_data_dir()?.to_string_lossy().into_owned())
 }
 
-// The main window is built here in code (rather than auto-created by Tauri)
-// solely so we can attach `on_web_resource_request` and rewrite the
-// Access-Control-Allow-Origin header — the only mechanism Tauri exposes for
-// customizing asset-protocol response headers. This is REQUIRED for add-ons to
-// load on WebKit webviews (iOS, and macOS/Linux release builds), where add-on
-// assets are served over `tauri://` instead of the dev server. It is paired
-// with `"create": false` on the "main" window in tauri.conf.json — if that flag
-// is removed, Tauri auto-creates the window WITHOUT this handler and add-ons
-// silently break on iOS while still working in `tauri dev`. Keep them together.
-fn create_main_window<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let window_config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|window| window.label == "main")
-        .expect("main window config is missing");
-
-    tauri::WebviewWindowBuilder::from_config(app.handle(), window_config)?
-        .on_web_resource_request(|_request, response| {
-            // The addon sandbox iframe (sandbox="allow-scripts") has an opaque
-            // origin, so its module-script loads are CORS requests that Tauri's
-            // reflected `Access-Control-Allow-Origin: tauri://localhost` can never
-            // satisfy (and the mobile dev proxy appends a second ACAO header).
-            // WKWebView does not reliably forward the `Origin` header to scheme
-            // handlers, so reply `*` unconditionally: this protocol only serves
-            // the public app bundle — IPC does not go through it.
-            response.headers_mut().insert(
-                "access-control-allow-origin",
-                tauri::http::HeaderValue::from_static("*"),
-            );
-        })
-        .build()?;
-
-    Ok(())
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Application entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,8 +374,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            create_main_window(app)?;
-
             let handle = app.handle().clone();
 
             // Embedded MCP server state (commands need it managed up front)
@@ -488,6 +449,7 @@ pub fn run() {
             commands::settings::is_auto_update_check_enabled,
             commands::settings::update_settings,
             commands::settings::get_latest_exchange_rates,
+            commands::settings::get_exchange_rates_for_dates,
             commands::settings::update_exchange_rate,
             commands::settings::add_exchange_rate,
             commands::settings::delete_exchange_rate,
@@ -507,6 +469,7 @@ pub fn run() {
             commands::spending::list_categorization_rules,
             commands::spending::create_categorization_rule,
             commands::spending::update_categorization_rule,
+            commands::spending::upsert_categorization_rule,
             commands::spending::delete_categorization_rule,
             commands::spending::rerun_categorization_rules,
             commands::spending::list_rule_presets,
@@ -607,6 +570,11 @@ pub fn run() {
             commands::asset::update_quote_mode,
             commands::asset::delete_asset,
             commands::asset::create_asset,
+            // Asset logo commands
+            commands::asset_logo::get_asset_logo,
+            commands::asset_logo::list_asset_logos,
+            commands::asset_logo::upsert_asset_logo,
+            commands::asset_logo::delete_asset_logo,
             // Alternative asset commands
             commands::alternative_assets::create_alternative_asset,
             commands::alternative_assets::update_alternative_asset_valuation,
@@ -700,6 +668,7 @@ pub fn run() {
             commands::addon::toggle_addon,
             commands::addon::uninstall_addon,
             commands::addon::load_addon_for_runtime,
+            commands::addon::load_addon_asset,
             commands::addon::get_enabled_addons_on_startup,
             commands::addon::check_addon_update,
             commands::addon::check_all_addon_updates,

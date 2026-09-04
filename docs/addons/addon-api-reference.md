@@ -2,8 +2,8 @@
 
 Complete reference for Wealthfolio addon APIs. Data APIs require an appropriate
 permission entry in `manifest.json`. The baseline capabilities — `query`,
-`storage`, `toast`, and `logger` — are available to every addon and need no
-declaration.
+`storage`, `toast`, `logger`, UI integration, and packaged assets — are
+available to every addon and need no declaration.
 
 ## Context Overview
 
@@ -14,25 +14,36 @@ export interface AddonContext {
   api: HostAPI;
   sidebar: SidebarAPI;
   router: RouterAPI;
+  ui: { root: HTMLElement };
+  assets: AddonAssets;
   onDisable: (callback: () => void) => void;
 }
 ```
 
 Basic usage:
 
-````typescript
-export default function enable(ctx: AddonContext) {
-  // Access APIs
+```typescript
+export default async function enable(ctx: AddonContext) {
   const accounts = await ctx.api.accounts.getAll();
-  #### `onDropHover(callback: EventCallback): Promise<UnlistenFn>`
-  Fires when files are hovered over for import.
+  const logoUrl = await ctx.assets.getUrl("assets/logo.png");
+  ctx.api.logger.info(`Loaded ${accounts.length} accounts and ${logoUrl}`);
+}
+```
 
-  ```typescript
-  const unlistenHover = await ctx.api.events.import.onDropHover((event) => {
-    console.log('File hover detected');
-    showDropZone();
-  });
-````
+`ctx.assets` refers to files private to the addon package. The similarly named
+`ctx.api.assets` API manages financial instrument records.
+
+## Import Events
+
+#### `onDropHover(callback: EventCallback): Promise<UnlistenFn>`
+
+Fires when files are hovered over for import.
+
+```typescript
+const unlistenHover = await ctx.api.events.import.onDropHover(() => {
+  showDropZone();
+});
+```
 
 #### `onDrop(callback: EventCallback): Promise<UnlistenFn>`
 
@@ -56,6 +67,54 @@ const unlistenCancel = await ctx.api.events.import.onDropCancelled(() => {
   hideDropZone();
 });
 ```
+
+---
+
+## Packaged Assets API
+
+Access static files indexed from `assets/**` and `dist/assets/**`. No manifest
+field or permission is required. Addons using this v3.7 API must set
+`minWealthfolioVersion` to `3.7.0` or newer.
+
+### Methods
+
+#### `list(): readonly AddonAsset[]`
+
+Returns public metadata (`path`, `mimeType`, and `size`). Host paths and opaque
+asset identifiers are never exposed.
+
+#### `has(path: string): boolean`
+
+Checks a logical package path. Invalid and traversing paths return `false`.
+
+#### `getBlob(path: string): Promise<Blob>`
+
+Loads and verifies asset bytes lazily. Concurrent requests for the same asset
+share a load; a failed load can be retried.
+
+#### `getUrl(path: string): Promise<string>`
+
+Returns a cached, sandbox-local Blob URL. The URL is revoked automatically when
+the addon reloads or stops and must not be persisted.
+
+```typescript
+const [logoUrl, wasm] = await Promise.all([
+  ctx.assets.getUrl("assets/logo.png"),
+  ctx.assets.getBlob("dist/assets/module.wasm"),
+]);
+
+await WebAssembly.instantiate(await wasm.arrayBuffer());
+```
+
+Local CSS `url(...)` references are rewritten automatically relative to the CSS
+file. `data:` and `blob:` URLs are preserved. Remote CSS URLs and `@import` are
+rejected; JavaScript/JSX asset strings are not rewritten, so use `getUrl()`. See
+the [v3.6 to v3.7 migration guide](./addon-migration-guide-v3.6-to-v3.7.md) for
+package limits and compatibility details.
+
+Blob URLs may be used by images, fonts, media elements, and WebAssembly. Worker
+and service-worker entry points, popups, direct network access, and remote CSS
+imports are intentionally unavailable inside the addon sandbox.
 
 ---
 
@@ -91,14 +150,16 @@ await ctx.api.navigation.navigate("/settings");
 
 ## Query API
 
-Access and manipulate the shared React Query client for efficient data
-management.
+Access the QueryClient scoped to this addon and coordinate invalidation with the
+host.
 
 ### Methods
 
 #### `getClient(): QueryClient`
 
-Gets the shared QueryClient instance from the main application.
+Gets the sandbox's addon-local QueryClient. It is reused across this addon's
+routes, but its cache is not shared with the host or other addons. Calls to the
+client's `invalidateQueries()` and `refetchQueries()` are mirrored to the host.
 
 ```typescript
 const queryClient = ctx.api.query.getClient();
@@ -631,6 +692,122 @@ const newRate = await ctx.api.exchangeRates.add({
 });
 ```
 
+#### `getRatesForDates(pairs: ExchangeRateDateQuery[]): Promise<ExchangeRateDateResult[]>`
+
+Gets one resolved exchange rate for each requested currency pair and date. Dates
+must use `YYYY-MM-DD`. Resolution follows Wealthfolio's standard FX rules,
+including currency normalization, inverse and triangulated rates, nearest-date
+lookup, and latest-rate fallback. The returned rate is therefore not guaranteed
+to come from an exact quote on the requested date.
+
+Results preserve the input order. A pair that cannot be resolved returns
+`rate: null` and an `error` without failing the rest of the batch.
+
+```typescript
+const results = await ctx.api.exchangeRates.getRatesForDates([
+  { fromCurrency: "USD", toCurrency: "EUR", date: "2024-01-15" },
+  { fromCurrency: "CAD", toCurrency: "JPY", date: "2024-01-15" },
+]);
+
+for (const result of results) {
+  if (result.rate !== null) {
+    console.log(result.fromCurrency, result.toCurrency, result.rate);
+  } else {
+    console.error(result.error);
+  }
+}
+```
+
+---
+
+## Spend Categorization API
+
+Classify activities (e.g. `WITHDRAWAL`s) into the user's existing spend-category
+taxonomy via Wealthfolio's categorization-rules engine, instead of a one-off
+per-activity tag. A rule is reusable — it keeps applying to future matching
+imports, not just the activities that exist when it's created.
+
+`kind` selects which of Wealthfolio's three fixed activity-scope taxonomies a
+category or rule belongs to: `"expense"`, `"income"`, or `"saving"`. Asset
+classification taxonomies aren't reachable through this API.
+
+### Methods
+
+#### `isEnabled(): Promise<boolean>`
+
+Whether the user has Spending enabled. Categories and rules still work when it's
+off, but `rerunRules()` is a no-op until the user opts an account in — check
+this to explain a result of `0`.
+
+```typescript
+if (!(await ctx.api.spending.isEnabled())) {
+  // Nudge the user to enable Spending before offering categorization.
+}
+```
+
+#### `getCategories(kind?: SpendCategoryKind): Promise<SpendCategory[]>`
+
+Lists selectable spend categories, flattened with a display path. Omit `kind` to
+load all three taxonomies at once.
+
+```typescript
+const categories = await ctx.api.spending.getCategories("expense");
+// [{ kind: "expense", taxonomyId: "spending_categories", categoryId: "cat_groceries",
+//    key: "groceries", name: "Groceries", path: "Food & Dining / Groceries" }, ...]
+```
+
+#### `getRules(): Promise<CategorizationRule[]>`
+
+Lists this addon's own categorization rules — the ones created via `saveRule`.
+Use this to reconcile after a user deletes one of your rules from Wealthfolio's
+own Settings → Spending → Rules UI.
+
+```typescript
+const rules = await ctx.api.spending.getRules();
+```
+
+#### `saveRule(rule: CategorizationRuleInput): Promise<CategorizationRule>`
+
+Creates or updates a categorization rule identified by `rule.ruleKey`. Calling
+this again with the same `ruleKey` (typically a stable id you already persist in
+your own addon settings) updates the existing rule in place instead of creating
+a duplicate — safe to call on every settings save.
+
+```typescript
+const saved = await ctx.api.spending.saveRule({
+  ruleKey: "my-addon-rule-1", // a stable key you choose and reuse
+  name: "Groceries via MyBank",
+  pattern: "MYBANK GROCERY",
+  matchType: "contains", // "contains" | "starts_with" | "exact" | "regex"
+  kind: "expense",
+  categoryId: "cat_groceries",
+  activityType: "WITHDRAWAL", // omit to match any activity type
+  accountId: "account-123", // omit for a rule that applies to all accounts
+});
+```
+
+#### `deleteRule(ruleKey: string): Promise<void>`
+
+Deletes the rule previously created with this `ruleKey`. No-op if no matching
+rule exists.
+
+```typescript
+await ctx.api.spending.deleteRule("my-addon-rule-1");
+```
+
+#### `rerunRules(onlyUncategorized?: boolean): Promise<number>`
+
+Re-runs all categorization rules. Defaults to `true`, which only fills in
+currently uncategorized activities — this preserves any existing manual or
+AI-assigned categories. Pass `false` to also overwrite existing rule/AI/import-
+assigned categories. Call this after an import so newly created activities pick
+up matching rules, since a rule only recategorizes existing activities at the
+moment it's created or updated.
+
+```typescript
+const touched = await ctx.api.spending.rerunRules();
+```
+
 ---
 
 ## Contribution Limits API
@@ -895,10 +1072,16 @@ Retrieves a secret value (returns null if not found).
 ```typescript
 const apiKey = await ctx.api.secrets.get("api-key");
 if (apiKey) {
-  // Use the API key
-  const data = await fetch(`https://api.example.com/data?key=${apiKey}`);
+  const response = await ctx.api.network.request({
+    url: "https://api.example.com/data",
+    auth: { type: "bearer", secretKey: "api-key" },
+  });
 }
 ```
+
+Prefer brokered `ctx.api.network.request()` over reading a secret into addon
+JavaScript. The request host must be declared in `network.allowedHosts` and its
+response body is text, not a binary transport.
 
 #### `delete(key: string): Promise<void>`
 

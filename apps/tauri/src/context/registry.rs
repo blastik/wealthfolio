@@ -3,8 +3,8 @@ use wealthfolio_ai::{AiProviderServiceTrait, ChatService};
 use wealthfolio_connect::BrokerSyncServiceTrait;
 use wealthfolio_core::{
     self, accounts, activities,
-    addons::AddonStorageRepositoryTrait,
-    assets::{self, AlternativeAssetServiceTrait},
+    addons::AddonService,
+    assets::{self, AlternativeAssetServiceTrait, AssetLogoServiceTrait},
     events::DomainEventSink,
     fx, goals, health, limits,
     lots::LotRepositoryTrait,
@@ -65,6 +65,7 @@ pub struct ServiceContext {
     pub net_worth_service: Arc<dyn portfolio::net_worth::NetWorthServiceTrait>,
     pub sync_service: Arc<dyn BrokerSyncServiceTrait>,
     pub alternative_asset_service: Arc<dyn AlternativeAssetServiceTrait>,
+    pub asset_logo_service: Arc<dyn AssetLogoServiceTrait>,
     pub taxonomy_service: Arc<dyn taxonomies::TaxonomyServiceTrait>,
     pub connect_service: Arc<ConnectService>,
     pub ai_provider_service: Arc<dyn AiProviderServiceTrait>,
@@ -72,7 +73,7 @@ pub struct ServiceContext {
     pub agent_environment: Arc<dyn wealthfolio_agent_tools::AgentEnvironment>,
     pub mcp_audit_repository: Arc<McpAuditRepository>,
     pub pat_repository: Arc<PatRepository>,
-    pub addon_storage_repository: Arc<dyn AddonStorageRepositoryTrait>,
+    pub addon_service: Arc<AddonService>,
     pub device_enroll_service: Arc<DeviceEnrollService>,
     pub device_sync_runtime: Arc<DeviceSyncRuntimeState>,
     pub broker_sync_running: Arc<AtomicBool>,
@@ -223,6 +224,10 @@ impl ServiceContext {
 
     pub fn alternative_asset_service(&self) -> Arc<dyn AlternativeAssetServiceTrait> {
         Arc::clone(&self.alternative_asset_service)
+    }
+
+    pub fn asset_logo_service(&self) -> Arc<dyn AssetLogoServiceTrait> {
+        Arc::clone(&self.asset_logo_service)
     }
 
     pub fn taxonomy_service(&self) -> Arc<dyn taxonomies::TaxonomyServiceTrait> {

@@ -22,11 +22,20 @@ import {
 import {
   addExchangeRate,
   getExchangeRates,
+  getExchangeRatesForDates,
   updateExchangeRate,
   calculateDepositsForLimit,
   createContributionLimit,
   getContributionLimit,
   updateContributionLimit,
+} from "@/adapters";
+import {
+  deleteCategorizationRule,
+  getSpendCategories,
+  isSpendingEnabled,
+  listCategorizationRules,
+  rerunCategorizationRules,
+  upsertCategorizationRule,
 } from "@/adapters";
 import { openCsvFileDialog, openFileSaveDialog } from "@/adapters";
 import { createGoal, getGoals, getGoalFunding, saveGoalFunding, updateGoal } from "@/adapters";
@@ -453,6 +462,14 @@ export function createAddonHostAPI(
       getExchangeRates,
       updateExchangeRate,
       addExchangeRate,
+      getExchangeRatesForDates,
+
+      isSpendingEnabled,
+      getSpendCategories,
+      listCategorizationRules,
+      upsertCategorizationRule,
+      deleteCategorizationRuleById: deleteCategorizationRule,
+      rerunCategorizationRulesForAddon: rerunCategorizationRules,
 
       getContributionLimit,
       createContributionLimit,
@@ -575,6 +592,8 @@ export function createAddonHostAPI(
 }
 
 export function createAddonContext(addonId: string, permissions?: Permission[]): AddonContext {
+  const unavailableAsset = (path: string) =>
+    Promise.reject(new Error(`Packaged asset '${path}' is only available in the addon sandbox`));
   return {
     ui: {
       root: document.createElement("div"),
@@ -596,6 +615,12 @@ export function createAddonContext(addonId: string, permissions?: Permission[]):
           title: route.title,
         });
       },
+    },
+    assets: {
+      list: () => [],
+      has: () => false,
+      getBlob: unavailableAsset,
+      getUrl: unavailableAsset,
     },
     onDisable: (cb) => {
       const callbacks = disableCallbacks.get(addonId) ?? new Set<() => void>();

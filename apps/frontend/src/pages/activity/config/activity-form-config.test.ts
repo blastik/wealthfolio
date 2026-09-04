@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { ACTIVITY_FORM_CONFIG } from "./activity-form-config";
+import { describe, expect, it } from "vitest";
+import { ActivityType } from "@/lib/constants";
 import type { AccountSelectOption } from "../components/forms/fields";
 import type { ActivityDetails } from "@/lib/types";
+import { mapActivityTypeToPicker } from "../utils/activity-form-utils";
+import { ACTIVITY_FORM_CONFIG, hasActivityForm } from "./activity-form-config";
 
 const accounts: AccountSelectOption[] = [
   { value: "acc-1", label: "Test Account", currency: "USD" },
@@ -89,5 +91,49 @@ describe("ACTIVITY_FORM_CONFIG.EXCHANGE.getDefaults", () => {
     expect(defaults.toActivityDate).toEqual(new Date("2026-02-03T10:00:00.000Z"));
     // Editing the IN leg directly: its own fee is used.
     expect(defaults.fee).toBe(5);
+  });
+});
+
+describe("hasActivityForm", () => {
+  it("accepts every type the picker can offer", () => {
+    for (const pickerType of [
+      ActivityType.BUY,
+      ActivityType.SELL,
+      ActivityType.DEPOSIT,
+      ActivityType.WITHDRAWAL,
+      ActivityType.DIVIDEND,
+      "TRANSFER",
+      ActivityType.SPLIT,
+      ActivityType.FEE,
+      ActivityType.INTEREST,
+      ActivityType.TAX,
+      ActivityType.CREDIT,
+    ]) {
+      expect(hasActivityForm(pickerType)).toBe(true);
+    }
+  });
+
+  it("accepts ADJUSTMENT, which is editable without being offered for creation", () => {
+    expect(hasActivityForm(ActivityType.ADJUSTMENT)).toBe(true);
+  });
+
+  it("rejects a stored type that has no editor", () => {
+    // A needs-review row imported by sync arrives as UNKNOWN, which carries no
+    // classification and so has nothing to edit — the caller must offer the
+    // picker rather than pin it.
+    expect(hasActivityForm(ActivityType.UNKNOWN)).toBe(false);
+  });
+
+  it("rejects an absent type", () => {
+    expect(hasActivityForm(undefined)).toBe(false);
+    expect(hasActivityForm("")).toBe(false);
+  });
+
+  it("agrees with the picker mapping for both transfer legs", () => {
+    // TRANSFER_IN/OUT are stored types with no form of their own; the picker
+    // alias is what has one, so the two helpers have to be used together.
+    expect(hasActivityForm(ActivityType.TRANSFER_IN)).toBe(false);
+    expect(hasActivityForm(mapActivityTypeToPicker(ActivityType.TRANSFER_IN))).toBe(true);
+    expect(hasActivityForm(mapActivityTypeToPicker(ActivityType.TRANSFER_OUT))).toBe(true);
   });
 });
