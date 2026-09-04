@@ -102,6 +102,7 @@ export const COMMANDS: CommandMap = {
   update_exchange_rate: { method: "PUT", path: "/exchange-rates" },
   add_exchange_rate: { method: "POST", path: "/exchange-rates" },
   delete_exchange_rate: { method: "DELETE", path: "/exchange-rates" },
+  get_exchange_rates_for_dates: { method: "POST", path: "/exchange-rates/historical" },
   // Activities
   search_activities: { method: "POST", path: "/activities/search" },
   create_activity: { method: "POST", path: "/activities" },
@@ -148,6 +149,11 @@ export const COMMANDS: CommandMap = {
   get_asset_profile: { method: "GET", path: "/assets/profile" },
   update_asset_profile: { method: "PUT", path: "/assets/profile" },
   update_quote_mode: { method: "PUT", path: "/assets/pricing-mode" },
+  // Asset logos
+  list_asset_logos: { method: "GET", path: "/assets/logos" },
+  get_asset_logo: { method: "GET", path: "/assets/logo" },
+  upsert_asset_logo: { method: "PUT", path: "/assets/logo" },
+  delete_asset_logo: { method: "DELETE", path: "/assets/logo" },
   // Market data
   search_symbol: { method: "GET", path: "/market-data/search" },
   resolve_symbol_quote: { method: "GET", path: "/market-data/resolve-currency" },
@@ -216,6 +222,7 @@ export const COMMANDS: CommandMap = {
   list_categorization_rules: { method: "GET", path: "/spending/rules" },
   create_categorization_rule: { method: "POST", path: "/spending/rules" },
   update_categorization_rule: { method: "PUT", path: "/spending/rules" },
+  upsert_categorization_rule: { method: "POST", path: "/spending/rules/upsert" },
   delete_categorization_rule: { method: "DELETE", path: "/spending/rules" },
   rerun_categorization_rules: { method: "POST", path: "/spending/rules/rerun" },
   list_rule_presets: { method: "GET", path: "/spending/rule-presets" },
@@ -260,7 +267,12 @@ export const COMMANDS: CommandMap = {
   update_addon_from_store_by_id: { method: "POST", path: "/addons/store/update" },
   download_addon_to_staging: { method: "POST", path: "/addons/store/staging/download" },
   install_addon_from_staging: { method: "POST", path: "/addons/store/install-from-staging" },
+  update_addon_network_approvals: { method: "POST", path: "/addons/network-approvals" },
   clear_addon_staging: { method: "DELETE", path: "/addons/store/staging" },
+  // Addon key-value storage
+  get_addon_storage_item: { method: "GET", path: "/addons/storage" },
+  set_addon_storage_item: { method: "PUT", path: "/addons/storage" },
+  delete_addon_storage_item: { method: "DELETE", path: "/addons/storage" },
   // Device Sync - Device management
   register_device: { method: "POST", path: "/sync/device/register" },
   get_device: { method: "GET", path: "/sync/device" },
@@ -500,13 +512,21 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
     }
     case "get_holdings":
     case "get_holdings_list": {
-      const p = payload as { filter: { type: string; accountId?: string } };
+      const p = payload as {
+        filter: { type: string; accountId?: string };
+        includeClosed?: boolean;
+      };
       if (p.filter?.type === "account" && p.filter.accountId) {
         const path = command === "get_holdings_list" ? "/holdings/list" : "/holdings";
-        url = `${API_PREFIX}${path}?accountId=${encodeURIComponent(p.filter.accountId)}`;
+        const params = new URLSearchParams({ accountId: p.filter.accountId });
+        if (p.includeClosed) params.set("includeClosed", "true");
+        url = `${API_PREFIX}${path}?${params.toString()}`;
         method = "GET";
       } else {
-        body = JSON.stringify({ filter: p.filter });
+        body = JSON.stringify({
+          filter: p.filter,
+          ...(p.includeClosed ? { includeClosed: true } : {}),
+        });
       }
       break;
     }
@@ -631,10 +651,15 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       break;
     }
     case "delete_snapshot": {
-      const { accountId, date } = payload as { accountId: string; date: string };
+      const { accountId, date, snapshotId } = payload as {
+        accountId: string;
+        date: string;
+        snapshotId?: string;
+      };
       const params = new URLSearchParams();
       params.set("accountId", accountId);
       params.set("date", date);
+      if (snapshotId) params.set("snapshotId", snapshotId);
       url += `?${params.toString()}`;
       break;
     }
@@ -823,6 +848,11 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       url += `/${encodeURIComponent(rateId)}`;
       break;
     }
+    case "get_exchange_rates_for_dates": {
+      const { request } = payload as { request: Record<string, unknown> };
+      body = JSON.stringify(request);
+      break;
+    }
     case "get_exchanges":
     case "synch_quotes":
       break;
@@ -995,6 +1025,21 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       };
       url += `/${encodeURIComponent(id)}`;
       body = JSON.stringify(bodyPayload);
+      break;
+    }
+    case "get_asset_logo":
+    case "delete_asset_logo": {
+      const { assetId } = payload as { assetId: string };
+      url += `/${encodeURIComponent(assetId)}`;
+      break;
+    }
+    case "upsert_asset_logo": {
+      const { assetId, payload: logoPayload } = payload as {
+        assetId: string;
+        payload: Record<string, unknown>;
+      };
+      url += `/${encodeURIComponent(assetId)}`;
+      body = JSON.stringify(logoPayload);
       break;
     }
     case "update_quote_mode": {
@@ -1428,6 +1473,11 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       body = JSON.stringify(patch);
       break;
     }
+    case "upsert_categorization_rule": {
+      const { rule } = payload as { rule: Record<string, unknown> };
+      body = JSON.stringify(rule);
+      break;
+    }
     case "delete_categorization_rule": {
       const { id } = payload as { id: string };
       url += `/${encodeURIComponent(id)}`;
@@ -1552,6 +1602,18 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       url += `/${encodeURIComponent(addonId)}`;
       break;
     }
+    case "get_addon_storage_item":
+    case "delete_addon_storage_item": {
+      const { addonId, key } = payload as { addonId: string; key: string };
+      url += `/${encodeURIComponent(addonId)}/${encodeURIComponent(key)}`;
+      break;
+    }
+    case "set_addon_storage_item": {
+      const { addonId, key, value } = payload as { addonId: string; key: string; value: string };
+      url += `/${encodeURIComponent(addonId)}/${encodeURIComponent(key)}`;
+      body = JSON.stringify({ value });
+      break;
+    }
     case "extract_addon_zip": {
       const { zipData } = payload as { zipData: Uint8Array | number[] };
       const zipDataB64 = toBase64(zipData);
@@ -1578,6 +1640,14 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
         approvedNetworkHosts?: string[];
       };
       body = JSON.stringify({ addonId, enableAfterInstall, approvedNetworkHosts });
+      break;
+    }
+    case "update_addon_network_approvals": {
+      const { addonId, approvedNetworkHosts } = payload as {
+        addonId: string;
+        approvedNetworkHosts: string[];
+      };
+      body = JSON.stringify({ addonId, approvedNetworkHosts });
       break;
     }
     case "clear_addon_staging": {
@@ -1607,9 +1677,10 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
     }
     // Device Sync commands - Device management
     case "register_device": {
-      const { displayName, instanceId } = payload as {
+      const { displayName, deviceNonce, instanceId } = payload as {
         displayName: string;
-        instanceId: string;
+        deviceNonce?: string;
+        instanceId?: string;
       };
       // Detect platform from browser user agent
       const userAgent = navigator.userAgent.toLowerCase();
@@ -1620,7 +1691,7 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       else if (userAgent.includes("android")) platform = "android";
       else if (userAgent.includes("iphone") || userAgent.includes("ipad")) platform = "ios";
 
-      body = JSON.stringify({ displayName, platform, instanceId });
+      body = JSON.stringify({ displayName, platform, deviceNonce: deviceNonce ?? instanceId });
       break;
     }
     case "get_device": {
@@ -1960,17 +2031,19 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
       break;
     }
     case "calculate_rebalance_plan": {
-      const { targetId, availableCash, filter, scenarioMode } = payload as {
+      const { targetId, availableCash, filter, scenarioMode, eligibleAssetIds } = payload as {
         targetId: string;
         availableCash: number;
         filter: unknown;
         scenarioMode: string;
+        eligibleAssetIds?: string[];
       };
       body = JSON.stringify({
         targetId,
         availableCash,
         filter,
         scenarioMode,
+        ...(eligibleAssetIds === undefined ? {} : { eligibleAssetIds }),
       });
       break;
     }

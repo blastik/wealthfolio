@@ -17,6 +17,24 @@
   "dataGrid": {
     "label": "Grille de données",
     "addRow": "Ajouter une ligne",
+    "sortAsc": "Tri croissant",
+    "sortDesc": "Tri décroissant",
+    "removeSort": "Supprimer le tri",
+    "pinToLeft": "Épingler à gauche",
+    "unpinFromLeft": "Détacher de la gauche",
+    "pinToRight": "Épingler à droite",
+    "unpinFromRight": "Détacher de la droite",
+    "hideColumn": "Masquer la colonne",
+    "resizeColumn": "Redimensionner la colonne {{label}}",
+    "variantShortText": "Texte court",
+    "variantLongText": "Texte long",
+    "variantNumber": "Nombre",
+    "variantUrl": "URL",
+    "variantCheckbox": "Case à cocher",
+    "variantSelect": "Sélection",
+    "variantMultiSelect": "Sélection multiple",
+    "variantDate": "Date",
+    "variantFile": "Fichier",
     "copy": "Copier",
     "cut": "Couper",
     "clear": "Effacer",
@@ -81,7 +99,13 @@
   },
   "datePicker": {
     "dateLabel": "Date",
-    "pick": "Choisir une date"
+    "pick": "Choisir une date",
+    "previousMonth": "Mois précédent",
+    "nextMonth": "Mois suivant",
+    "chooseMonth": "Choisir le mois",
+    "chooseYear": "Choisir l’année",
+    "previousYear": "Année précédente",
+    "nextYear": "Année suivante"
   },
   "dateRange": {
     "pick": "Choisir une plage de dates",
@@ -140,7 +164,18 @@
     "YTD": "depuis le début de l'année",
     "1Y": "dernière année",
     "5Y": "5 dernières années",
-    "ALL": "Tout l'historique"
+    "ALL": "Tout l'historique",
+    "label": {
+      "1D": "1J",
+      "1W": "1S",
+      "1M": "1M",
+      "3M": "3M",
+      "6M": "6M",
+      "YTD": "YTD",
+      "1Y": "1A",
+      "5Y": "5A",
+      "ALL": "Max"
+    }
   },
   "search": {
     "clear": "Effacer la recherche",

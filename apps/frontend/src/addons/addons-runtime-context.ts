@@ -1,6 +1,7 @@
 import type { AddonContext, Permission, SidebarItemConfig } from "@wealthfolio/addon-sdk";
 import { toast } from "sonner";
 import { createPermissionGuard, createSDKHostAPIBridge, type PermissionGuard } from "./type-bridge";
+import { getDurableNavItems, getDurableRoutes } from "./contribution-registry";
 
 import {
   logger,
@@ -21,11 +22,20 @@ import {
 import {
   addExchangeRate,
   getExchangeRates,
+  getExchangeRatesForDates,
   updateExchangeRate,
   calculateDepositsForLimit,
   createContributionLimit,
   getContributionLimit,
   updateContributionLimit,
+} from "@/adapters";
+import {
+  deleteCategorizationRule,
+  getSpendCategories,
+  isSpendingEnabled,
+  listCategorizationRules,
+  rerunCategorizationRules,
+  upsertCategorizationRule,
 } from "@/adapters";
 import { openCsvFileDialog, openFileSaveDialog } from "@/adapters";
 import { createGoal, getGoals, getGoalFunding, saveGoalFunding, updateGoal } from "@/adapters";
@@ -75,6 +85,9 @@ import {
   deleteAddonSecret,
   getAddonSecret,
   setAddonSecret,
+  deleteAddonStorageItem,
+  getAddonStorageItem,
+  setAddonStorageItem,
   backupDatabase,
   getSettings,
   updateSettings,
@@ -175,17 +188,17 @@ function notifyNavigationUpdate() {
   navigationUpdateListeners.forEach((listener) => listener());
 }
 
-function scopedKey(addonId: string, id: string) {
+export function scopedKey(addonId: string, id: string) {
   return `${addonId}:${id}`;
 }
 
-function cleanRoutePath(path: string) {
+export function cleanRoutePath(path: string) {
   const routeOnly = path.trim().split(/[?#]/, 1)[0] ?? "";
   const withSlash = routeOnly.startsWith("/") ? routeOnly : `/${routeOnly}`;
   return withSlash.length > 1 && withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
 }
 
-function toRouterPath(href: string) {
+export function toRouterPath(href: string) {
   return href.replace(/^\/+/, "");
 }
 
@@ -363,11 +376,32 @@ export function clearAddonRegistrations(addonId: string) {
 }
 
 export function getDynamicNavItems() {
-  return Array.from(dynamicNavItems.values()).sort((a, b) => a.order - b.order);
+  // Merge durable (manifest-contributed) items with transient runtime
+  // registrations. Both are keyed by the scoped id (`addonId:linkId`, where a
+  // link id defaults to its route id); per RFC A2 a runtime registration whose
+  // id duplicates a durable contribution is ignored (durable wins), so we seed
+  // transient first and let durable override.
+  const merged = new Map<string, DynamicNavItem>();
+  for (const item of dynamicNavItems.values()) {
+    merged.set(item.id, item);
+  }
+  for (const item of getDurableNavItems()) {
+    merged.set(item.id, item);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.order - b.order);
 }
 
 export function getDynamicRoutes() {
-  return Array.from(dynamicRoutes.values()).sort((a, b) => a.path.localeCompare(b.path));
+  // Same durable-wins merge as nav items, keyed by `addonId:routeId` (== the
+  // contributed route id per RFC A2).
+  const merged = new Map<string, DynamicRouteEntry>();
+  for (const route of dynamicRoutes.values()) {
+    merged.set(scopedKey(route.addonId, route.routeId), route);
+  }
+  for (const route of getDurableRoutes()) {
+    merged.set(scopedKey(route.addonId, route.routeId), route);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function subscribeToNavigationUpdates(callback: () => void) {
@@ -403,6 +437,17 @@ function createAddonScopedSecrets(addonId: string, guard: PermissionGuard) {
   };
 }
 
+// Storage is a baseline (implicit) capability — no permission guard, mirroring
+// the way secrets is scoped per addon but without a consent category.
+function createAddonScopedStorage(addonId: string) {
+  return {
+    get: async (key: string): Promise<string | null> => getAddonStorageItem(addonId, key),
+    set: async (key: string, value: string): Promise<void> =>
+      setAddonStorageItem(addonId, key, value),
+    delete: async (key: string): Promise<void> => deleteAddonStorageItem(addonId, key),
+  };
+}
+
 export function createAddonHostAPI(
   addonId: string,
   permissions?: Permission[],
@@ -417,6 +462,14 @@ export function createAddonHostAPI(
       getExchangeRates,
       updateExchangeRate,
       addExchangeRate,
+      getExchangeRatesForDates,
+
+      isSpendingEnabled,
+      getSpendCategories,
+      listCategorizationRules,
+      upsertCategorizationRule,
+      deleteCategorizationRuleById: deleteCategorizationRule,
+      rerunCategorizationRulesForAddon: rerunCategorizationRules,
 
       getContributionLimit,
       createContributionLimit,
@@ -534,19 +587,19 @@ export function createAddonHostAPI(
   return {
     ...baseAPI,
     secrets: createAddonScopedSecrets(addonId, permissionGuard),
+    storage: createAddonScopedStorage(addonId),
   };
 }
 
 export function createAddonContext(addonId: string, permissions?: Permission[]): AddonContext {
-  const permissionGuard = createPermissionGuard(addonId, permissions);
-
+  const unavailableAsset = (path: string) =>
+    Promise.reject(new Error(`Packaged asset '${path}' is only available in the addon sandbox`));
   return {
     ui: {
       root: document.createElement("div"),
     },
     sidebar: {
       addItem: (cfg) => {
-        permissionGuard.assertCanUse("ui", "sidebar.addItem");
         registerAddonNavItem(addonId, cfg);
 
         return {
@@ -556,13 +609,18 @@ export function createAddonContext(addonId: string, permissions?: Permission[]):
     },
     router: {
       add: (route) => {
-        permissionGuard.assertCanUse("ui", "router.add");
         registerAddonRoute(addonId, {
           path: route.path,
           routeId: route.id ?? route.path,
           title: route.title,
         });
       },
+    },
+    assets: {
+      list: () => [],
+      has: () => false,
+      getBlob: unavailableAsset,
+      getUrl: unavailableAsset,
     },
     onDisable: (cb) => {
       const callbacks = disableCallbacks.get(addonId) ?? new Set<() => void>();

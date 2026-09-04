@@ -1,27 +1,40 @@
-import type { ToolCallMessagePartProps } from "@assistant-ui/react";
-import { makeAssistantToolUI } from "@assistant-ui/react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Skeleton } from "@wealthfolio/ui";
-import { Icons } from "@wealthfolio/ui/components/ui/icons";
-import { memo, useCallback, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
-import { Link } from "react-router-dom";
-import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
-import { useSettingsContext } from "@/lib/settings-provider";
 import { updateToolResult } from "@/adapters";
-import { ActivityType, ACTIVITY_TYPE_DISPLAY_NAMES, QuoteMode } from "@/lib/constants";
+import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
+import { localizeActivitySubtypeName, localizeActivityTypeName } from "@/lib/activity-utils";
+import { ActivityType, QuoteMode } from "@/lib/constants";
+import { useSettingsContext } from "@/lib/settings-provider";
 import type { ActivityDetails } from "@/lib/types";
-import { parse as dateFnsParse } from "date-fns";
+import type { AccountSelectOption } from "@/pages/activity/components/forms/fields";
+import type { NewActivityFormValues } from "@/pages/activity/components/forms/schemas";
+import type { TransferFormValues } from "@/pages/activity/components/forms/transfer-form";
 import {
   ACTIVITY_FORM_CONFIG,
   type ActivityFormValues,
   type PickerActivityType,
 } from "@/pages/activity/config/activity-form-config";
-import type { AccountSelectOption } from "@/pages/activity/components/forms/fields";
-import type { NewActivityFormValues } from "@/pages/activity/components/forms/schemas";
-import type { TransferFormValues } from "@/pages/activity/components/forms/transfer-form";
 import { useActivityMutations } from "@/pages/activity/hooks/use-activity-mutations";
+import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { makeAssistantToolUI } from "@assistant-ui/react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Skeleton,
+  useAmountFormatting,
+  useDateFormatting,
+  type FormattingApi,
+} from "@wealthfolio/ui";
+import { Icons } from "@wealthfolio/ui/components/ui/icons";
+import { parse as dateFnsParse } from "date-fns";
+import type { TFunction } from "i18next";
+import { memo, useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { useRuntimeContext } from "../../hooks/use-runtime-context";
+import { estimateDraftAmount } from "./shared";
 
 // ============================================================================
 // Types
@@ -35,6 +48,7 @@ interface RecordActivityArgs {
   unit_price?: number;
   amount?: number;
   fee?: number;
+  tax?: number;
   account?: string;
   subtype?: string;
   notes?: string;
@@ -50,6 +64,7 @@ interface ActivityDraft {
   unitPrice?: number;
   amount?: number;
   fee?: number;
+  tax?: number;
   currency: string;
   accountId?: string;
   accountName?: string;
@@ -137,10 +152,19 @@ function finiteNumberValue(value: unknown): number | undefined {
   return Number.isFinite(numberValue) ? numberValue : undefined;
 }
 
-function formatActivityDate(dateString: string, t: TFunction): string {
-  return (
-    parseActivityDateToLocal(dateString)?.toLocaleDateString() ?? t("ai:recordActivity.invalidDate")
-  );
+function formatActivityDate(
+  dateString: string,
+  t: TFunction,
+  formatting: Pick<FormattingApi, "formatCalendarDate">,
+): string {
+  const date = parseActivityDateToLocal(dateString);
+  return date
+    ? formatting.formatCalendarDate({
+        year: date.getFullYear(),
+        month: date.getMonth() + 1,
+        day: date.getDate(),
+      })
+    : t("ai:recordActivity.invalidDate");
 }
 
 function displayPart(value: string | undefined): string | undefined {
@@ -243,6 +267,7 @@ function normalizeResult(result: unknown, fallbackCurrency: string): RecordActiv
     unitPrice: finiteNumberValue(draftRaw.unitPrice ?? draftRaw.unit_price),
     amount: finiteNumberValue(draftRaw.amount),
     fee: finiteNumberValue(draftRaw.fee),
+    tax: finiteNumberValue(draftRaw.tax),
     currency: (draftRaw.currency as string) ?? fallbackCurrency,
     accountId: (draftRaw.accountId as string) ?? (draftRaw.account_id as string) ?? undefined,
     accountName: (draftRaw.accountName as string) ?? (draftRaw.account_name as string) ?? undefined,
@@ -377,24 +402,25 @@ interface SuccessStateProps {
 }
 
 function SuccessState({ draft, createdActivityId, currency }: SuccessStateProps) {
+  const amountFormatting = useAmountFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
+  const dateFormatting = useDateFormatting();
+
+  const formatting = { ...dateFormatting, ...amountFormatting };
+
+  const { formatAmount: formatLocalizedAmount } = formatting;
 
   const formatAmount = useCallback(
     (value: number | undefined) => {
       if (value === undefined) return "-";
       if (isBalanceHidden) return "\u2022\u2022\u2022\u2022\u2022";
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency,
-      }).format(value);
+      return formatLocalizedAmount(value, currency);
     },
-    [currency, isBalanceHidden],
+    [currency, formatLocalizedAmount, isBalanceHidden],
   );
 
-  const activityTypeDisplay =
-    (ACTIVITY_TYPE_DISPLAY_NAMES as Record<string, string>)[draft.activityType] ??
-    draft.activityType;
+  const activityTypeDisplay = localizeActivityTypeName(t, draft.activityType);
 
   return (
     <Card className="bg-muted/40 border-success/30">
@@ -412,7 +438,9 @@ function SuccessState({ draft, createdActivityId, currency }: SuccessStateProps)
           </div>
           <div>
             <span className="text-muted-foreground">{t("ai:recordActivity.dateLabel")}</span>{" "}
-            <span className="font-medium">{formatActivityDate(draft.activityDate, t)}</span>
+            <span className="font-medium">
+              {formatActivityDate(draft.activityDate, t, dateFormatting)}
+            </span>
           </div>
           {draft.symbol && (
             <div>
@@ -509,6 +537,7 @@ function draftToPseudoActivity(
     unitPrice: draft.unitPrice != null ? String(draft.unitPrice) : null,
     amount: draft.amount != null ? String(draft.amount) : null,
     fee: draft.fee != null ? String(draft.fee) : null,
+    tax: draft.tax != null ? String(draft.tax) : null,
     currency: draft.currency,
     comment: draft.notes,
     subtype: draft.subtype,
@@ -621,21 +650,26 @@ function DraftReview({
   onConfirm,
   onEdit,
 }: DraftReviewProps) {
+  const amountFormatting = useAmountFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
+  const dateFormatting = useDateFormatting();
+
+  const formatting = { ...dateFormatting, ...amountFormatting };
+
+  const { formatAmount: formatLocalizedAmount } = formatting;
   const formatAmount = useCallback(
     (value: number | undefined) => {
       if (value === undefined) return "-";
       if (isBalanceHidden) return "\u2022\u2022\u2022\u2022\u2022";
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: draft.currency,
-      }).format(value);
+      return formatLocalizedAmount(value, draft.currency);
     },
-    [draft.currency, isBalanceHidden],
+    [draft.currency, formatLocalizedAmount, isBalanceHidden],
   );
 
   const assetSummary = getAssetSummary(draft, resolvedAsset, t);
+  // Drafts state only user-provided amounts; trades preview the mirror calc.
+  const estimatedAmount = estimateDraftAmount(draft, resolvedAsset?.instrumentType);
 
   return (
     <CardContent className="space-y-5">
@@ -659,7 +693,7 @@ function DraftReview({
         <ReviewField label={t("ai:recordActivity.type")} value={activityTypeDisplay} />
         <ReviewField
           label={t("ai:recordActivity.date")}
-          value={formatActivityDate(draft.activityDate, t)}
+          value={formatActivityDate(draft.activityDate, t, dateFormatting)}
         />
         <ReviewField
           label={t("ai:recordActivity.account")}
@@ -671,17 +705,30 @@ function DraftReview({
         {draft.unitPrice !== undefined && (
           <ReviewField
             label={t("ai:recordActivity.unitPrice")}
-            value={formatAmount(draft.unitPrice)}
+            value={
+              isBalanceHidden
+                ? "\u2022\u2022\u2022\u2022\u2022"
+                : amountFormatting.formatPrice(draft.unitPrice, draft.currency)
+            }
           />
         )}
-        {draft.amount !== undefined && (
-          <ReviewField label={t("ai:recordActivity.amount")} value={formatAmount(draft.amount)} />
+        {estimatedAmount !== undefined && (
+          <ReviewField
+            label={t("ai:recordActivity.amount")}
+            value={formatAmount(estimatedAmount)}
+          />
         )}
         {draft.fee !== undefined && (
           <ReviewField label={t("ai:recordActivity.fee")} value={formatAmount(draft.fee)} />
         )}
+        {draft.tax !== undefined && (
+          <ReviewField label={t("ai:recordActivity.tax")} value={formatAmount(draft.tax)} />
+        )}
         {draft.subtype && (
-          <ReviewField label={t("ai:recordActivity.subtype")} value={draft.subtype} />
+          <ReviewField
+            label={t("ai:recordActivity.subtype")}
+            value={localizeActivitySubtypeName(t, draft.subtype)}
+          />
         )}
       </div>
 
@@ -734,6 +781,7 @@ function DraftForm({
   const runtime = useRuntimeContext();
   const threadId = runtime.currentThreadId;
   const { isBalanceHidden } = useBalancePrivacy();
+  const { formatAmount } = useAmountFormatting();
   const [isEditing, setIsEditing] = useState(false);
 
   const pickerType = useMemo(() => toPickerActivityType(draft.activityType), [draft.activityType]);
@@ -789,7 +837,10 @@ function DraftForm({
         const submitData = {
           ...basePayload,
           activityType,
-        } as NewActivityFormValues;
+          // A confirm or form save is the user's review of the shown draft;
+          // AI-recorded activities never enter the review queue.
+          needsReview: false,
+        } as unknown as NewActivityFormValues;
 
         const created = await addActivityMutation.mutateAsync(submitData);
 
@@ -821,7 +872,11 @@ function DraftForm({
 
   const handleConfirm = useCallback(() => {
     if (!defaultValues || !canConfirm) return;
-    void handleFormSubmit(defaultValues as ActivityFormValues);
+    // Confirming the card - with its amount visible - is the user's review of
+    // the total, so attest it instead of letting the backend queue it again.
+    void handleFormSubmit({ ...defaultValues, needsReview: false } as ActivityFormValues & {
+      needsReview?: boolean;
+    });
   }, [canConfirm, defaultValues, handleFormSubmit]);
 
   if (!config) {
@@ -837,25 +892,16 @@ function DraftForm({
   }
 
   const FormComponent = config.component;
-  const activityTypeDisplay =
-    (ACTIVITY_TYPE_DISPLAY_NAMES as Record<string, string>)[draft.activityType] ??
-    draft.activityType;
+  const activityTypeDisplay = localizeActivityTypeName(t, draft.activityType);
   const cardTitle = isEditing
-    ? t("ai:recordActivity.editActivity", { type: activityTypeDisplay.toLowerCase() })
-    : t("ai:recordActivity.reviewActivity", { type: activityTypeDisplay.toLowerCase() });
-  const headerAmount =
-    draft.amount ??
-    (draft.quantity != null && draft.unitPrice != null
-      ? draft.quantity * draft.unitPrice
-      : undefined);
+    ? t("ai:recordActivity.editActivity", { type: activityTypeDisplay })
+    : t("ai:recordActivity.reviewActivity", { type: activityTypeDisplay });
+  const headerAmount = estimateDraftAmount(draft, resolvedAsset?.instrumentType);
   const headerAmountLabel =
     headerAmount !== undefined
       ? isBalanceHidden
         ? "\u2022\u2022\u2022\u2022\u2022"
-        : new Intl.NumberFormat("en-US", {
-            style: "currency",
-            currency: draft.currency,
-          }).format(headerAmount)
+        : formatAmount(headerAmount, draft.currency)
       : undefined;
 
   return (

@@ -6,11 +6,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@wealthfolio/ui/components/ui/collapsible";
-import { AmountDisplay, GainPercent, QuantityDisplay } from "@wealthfolio/ui";
+import { AmountDisplay, QuantityDisplay } from "@wealthfolio/ui";
+import { HoldingPerformancePercent } from "@/components/holding-performance-percent";
 import { TickerAvatar } from "@/components/ticker-avatar";
 import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
 import { Holding, HOLDING_GROUP_ORDER } from "@/lib/types";
 import { AccountType, AssetKind, HoldingType } from "@/lib/constants";
+import { getBaseHoldingPerformancePercent } from "@/lib/holding-performance";
 import { cn, safeDivide } from "@/lib/utils";
 import { useSettingsContext } from "@/lib/settings-provider";
 import { useState, useMemo } from "react";
@@ -244,9 +246,14 @@ function HoldingRow({
           : (holding.dayChange?.local ?? 0);
   const gainPct =
     performanceMode === "return"
-      ? (holding.totalReturnPct ?? holding.totalGainPct)
+      ? showConvertedValues
+        ? (getBaseHoldingPerformancePercent(holding, "totalReturn") ??
+          getBaseHoldingPerformancePercent(holding, "totalGain"))
+        : (holding.totalReturnPct ?? holding.totalGainPct)
       : performanceMode === "pnl"
-        ? holding.totalGainPct
+        ? showConvertedValues
+          ? getBaseHoldingPerformancePercent(holding, "totalGain")
+          : holding.totalGainPct
         : holding.dayChangePct;
 
   return (
@@ -261,7 +268,11 @@ function HoldingRow({
       >
         {/* Symbol/Name Column */}
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <TickerAvatar symbol={avatarSymbol} className="h-8 w-8 flex-shrink-0" />
+          <TickerAvatar
+            symbol={avatarSymbol}
+            assetId={holding.instrument?.id}
+            className="h-8 w-8 flex-shrink-0"
+          />
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex items-center gap-2">
               <span className="truncate font-medium">{symbol}</span>
@@ -303,7 +314,7 @@ function HoldingRow({
                 isHidden={isBalanceHidden}
                 colorFormat={true}
               />
-              <GainPercent className="text-xs" value={gainPct ?? 0} />
+              <HoldingPerformancePercent className="text-xs" value={gainPct} />
             </>
           )}
           {holding.isLiability && <span className="text-muted-foreground text-sm">--</span>}

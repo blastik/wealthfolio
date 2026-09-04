@@ -13,14 +13,13 @@ import {
   type SymbolSearchResult,
 } from "@wealthfolio/ui";
 
+import { ActivityType, INSTRUMENT_TYPE_OPTIONS, SUBTYPES_BY_ACTIVITY_TYPE } from "@/lib/constants";
 import {
-  ActivityType,
-  ActivityTypeNames,
-  INSTRUMENT_TYPE_OPTIONS,
-  SUBTYPES_BY_ACTIVITY_TYPE,
-  SUBTYPE_DISPLAY_NAMES,
-} from "@/lib/constants";
-import { needsImportAssetResolution } from "@/lib/activity-utils";
+  isAssetIdentityRequired,
+  localizeActivitySubtypeName,
+  localizeActivityTypeName,
+  supportsPerformanceBoundary,
+} from "@/lib/activity-utils";
 import { quoteModeFromSearchResult } from "@/lib/asset-utils";
 import { ActivityTypeBadge } from "../../components/activity-type-badge";
 import type { DraftActivity, DraftActivityStatus } from "../context";
@@ -148,23 +147,26 @@ function useImportReviewColumns({
     () =>
       importProfile.allowedActivityTypes.map((type) => ({
         value: type,
-        label: ActivityTypeNames[type],
+        label: localizeActivityTypeName(t, type),
       })),
-    [importProfile.allowedActivityTypes],
+    [importProfile.allowedActivityTypes, t],
   );
 
   // Dynamic subtype options based on activity type
-  const getSubtypeOptions = useCallback((rowData: unknown) => {
-    const draft = rowData as DraftActivity;
-    const activityType = draft.activityType?.toUpperCase();
-    if (!activityType) return [];
+  const getSubtypeOptions = useCallback(
+    (rowData: unknown) => {
+      const draft = rowData as DraftActivity;
+      const activityType = draft.activityType?.toUpperCase();
+      if (!activityType) return [];
 
-    const allowedSubtypes = SUBTYPES_BY_ACTIVITY_TYPE[activityType] || [];
-    return allowedSubtypes.map((subtype) => ({
-      value: subtype,
-      label: SUBTYPE_DISPLAY_NAMES[subtype] || subtype,
-    }));
-  }, []);
+      const allowedSubtypes = SUBTYPES_BY_ACTIVITY_TYPE[activityType] || [];
+      return allowedSubtypes.map((subtype) => ({
+        value: subtype,
+        label: localizeActivitySubtypeName(t, subtype),
+      }));
+    },
+    [t],
+  );
 
   return useMemo<ColumnDef<DraftActivity>[]>(() => {
     const visibleDataColumns = new Set<string>(importProfile.reviewColumns);
@@ -320,7 +322,7 @@ function useImportReviewColumns({
           },
         },
       },
-      // 7. External (checkbox for TRANSFER_IN/TRANSFER_OUT only)
+      // 7. Explicit performance boundary for transfers and credits
       {
         id: "isExternal",
         accessorKey: "isExternal",
@@ -331,14 +333,9 @@ function useImportReviewColumns({
         meta: {
           cell: {
             variant: "checkbox",
-            // Only enabled for transfer types
             isDisabled: (rowData: unknown) => {
               const row = rowData as DraftActivity;
-              const activityType = row.activityType?.toUpperCase();
-              return (
-                activityType !== ActivityType.TRANSFER_IN &&
-                activityType !== ActivityType.TRANSFER_OUT
-              );
+              return !supportsPerformanceBoundary(row.activityType);
             },
           },
         },
@@ -357,7 +354,7 @@ function useImportReviewColumns({
             onCreateCustomAsset,
             isClearable: (rowData: unknown) => {
               const row = rowData as DraftActivity;
-              return !needsImportAssetResolution(row.activityType ?? "", row.subtype);
+              return !isAssetIdentityRequired(row.activityType ?? "", row.subtype);
             },
           },
         },

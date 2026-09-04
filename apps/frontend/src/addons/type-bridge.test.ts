@@ -2,6 +2,8 @@
 
 import { vi, describe, it, expect } from "vitest";
 import { createPermissionGuard, createSDKHostAPIBridge, type InternalHostAPI } from "./type-bridge";
+import { deriveRuleId } from "./spending-rule-key";
+import { getPermissionCategory, isBaselineCategory } from "@wealthfolio/addon-sdk";
 
 describe("Addon Type Bridge", () => {
   describe("createSDKHostAPIBridge", () => {
@@ -105,6 +107,38 @@ describe("Addon Type Bridge", () => {
       );
     });
 
+    it("should guard and forward historical exchange-rate lookups", async () => {
+      const getExchangeRatesForDates = vi.fn().mockResolvedValue([]);
+      const guard = createPermissionGuard("test-addon", [
+        {
+          category: "currency",
+          purpose: "Historical exchange rates",
+          functions: [{ name: "getRatesForDates", isDeclared: true, isDetected: false }],
+        },
+      ]);
+      const sdkAPI = createSDKHostAPIBridge(
+        {
+          getExchangeRatesForDates,
+          logError: vi.fn(),
+          logInfo: vi.fn(),
+          logWarn: vi.fn(),
+          logTrace: vi.fn(),
+          logDebug: vi.fn(),
+        } as unknown as InternalHostAPI,
+        "test-addon",
+        guard,
+      );
+      const pairs = [{ fromCurrency: "USD", toCurrency: "EUR", date: "2026-05-18" }];
+
+      await sdkAPI.exchangeRates.getRatesForDates(pairs);
+
+      expect(getExchangeRatesForDates).toHaveBeenCalledWith(pairs);
+    });
+
+    it("registers historical exchange-rate lookups in currency permissions", () => {
+      expect(getPermissionCategory("currency")?.functions).toContain("getRatesForDates");
+    });
+
     it("should not grant detected-only function permissions", () => {
       const guard = createPermissionGuard("test-addon", [
         {
@@ -132,19 +166,29 @@ describe("Addon Type Bridge", () => {
       }
     });
 
-    it("should allow legacy addon navigation when router permission is granted", () => {
-      const guard = createPermissionGuard("test-addon", [
-        {
-          category: "ui",
-          purpose: "Navigation",
-          functions: [{ name: "router.add", isDeclared: true, isDetected: false }],
-        },
-      ]);
-
-      expect(guard.canUse("ui", "navigation.navigate")).toBe(true);
+    it("treats ui/query and other baseline capabilities as baseline categories", () => {
+      expect(isBaselineCategory("ui")).toBe(true);
+      expect(isBaselineCategory("query")).toBe(true);
+      expect(isBaselineCategory("toast")).toBe(true);
+      expect(isBaselineCategory("logger")).toBe(true);
+      expect(isBaselineCategory("storage")).toBe(true);
+      expect(isBaselineCategory("accounts")).toBe(false);
     });
 
-    it("should support legacy string function permissions from raw manifests", () => {
+    it("allows baseline capabilities without any declared permission", () => {
+      const guard = createPermissionGuard("test-addon", []);
+
+      // Baseline categories are implicit — allowed with no declaration and never throw.
+      expect(guard.canUse("ui", "sidebar.addItem")).toBe(true);
+      expect(guard.canUse("ui", "router.add")).toBe(true);
+      expect(guard.canUse("ui", "navigation.navigate")).toBe(true);
+      expect(guard.canUse("query", "invalidateQueries")).toBe(true);
+      expect(guard.canUse("query", "refetchQueries")).toBe(true);
+      expect(() => guard.assertCanUse("ui", "sidebar.addItem")).not.toThrow();
+      expect(() => guard.assertCanUse("query", "invalidateQueries")).not.toThrow();
+    });
+
+    it("still allows baseline capabilities even when a legacy manifest declares them", () => {
       const guard = createPermissionGuard("test-addon", [
         {
           category: "ui",
@@ -154,19 +198,6 @@ describe("Addon Type Bridge", () => {
       ] as unknown as Parameters<typeof createPermissionGuard>[1]);
 
       expect(guard.canUse("ui", "sidebar.addItem")).toBe(true);
-      expect(guard.canUse("ui", "router.add")).toBe(true);
-      expect(guard.canUse("ui", "navigation.navigate")).toBe(true);
-    });
-
-    it("should treat missing isDeclared as declared for object function permissions", () => {
-      const guard = createPermissionGuard("test-addon", [
-        {
-          category: "ui",
-          purpose: "Navigation",
-          functions: [{ name: "router.add" }],
-        },
-      ] as unknown as Parameters<typeof createPermissionGuard>[1]);
-
       expect(guard.canUse("ui", "router.add")).toBe(true);
       expect(guard.canUse("ui", "navigation.navigate")).toBe(true);
     });
@@ -253,6 +284,181 @@ describe("Addon Type Bridge", () => {
         url: "https://api.example.com/v1",
         auth: { type: "bearer", secretKey: "api-token" },
       });
+    });
+  });
+
+  describe("spending namespace", () => {
+    const spendingGuard = (functionName: string) =>
+      createPermissionGuard("test-addon", [
+        {
+          category: "spending",
+          purpose: "Categorize transactions",
+          functions: [{ name: functionName, isDeclared: true, isDetected: false }],
+        },
+      ]);
+    const loggerMocks = {
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      logWarn: vi.fn(),
+      logTrace: vi.fn(),
+      logDebug: vi.fn(),
+    };
+    const savedRule = {
+      id: "will-be-overwritten",
+      name: "Groceries",
+      pattern: "SUPERMARKET",
+      matchType: "contains",
+      taxonomyId: "spending_categories",
+      categoryId: "cat_groceries",
+      activityType: "WITHDRAWAL",
+      accountId: "account-1",
+      priority: 0,
+      isGlobal: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+
+    it("saveRule calls the atomic upsert with a stable, addon-scoped id and kind mapped to a taxonomyId", async () => {
+      const expectedId = await deriveRuleId("test-addon", "pattern-1");
+      const mockUpsert = vi.fn().mockResolvedValue({ ...savedRule, id: expectedId });
+
+      const sdkAPI = createSDKHostAPIBridge(
+        { upsertCategorizationRule: mockUpsert, ...loggerMocks } as unknown as InternalHostAPI,
+        "test-addon",
+        spendingGuard("saveRule"),
+      );
+
+      const result = await sdkAPI.spending.saveRule({
+        ruleKey: "pattern-1",
+        name: "Groceries",
+        pattern: "SUPERMARKET",
+        kind: "expense",
+        categoryId: "cat_groceries",
+        activityType: "WITHDRAWAL",
+        accountId: "account-1",
+      });
+
+      expect(mockUpsert).toHaveBeenCalledWith({
+        id: expectedId,
+        name: "Groceries",
+        pattern: "SUPERMARKET",
+        matchType: "contains",
+        taxonomyId: "spending_categories",
+        categoryId: "cat_groceries",
+        activityType: "WITHDRAWAL",
+        isGlobal: false,
+        accountId: "account-1",
+        priority: 0,
+      });
+      expect(result).toEqual(
+        expect.objectContaining({ id: expectedId, kind: "expense", categoryId: "cat_groceries" }),
+      );
+    });
+
+    it("rejects an unsupported category kind before saving a rule", async () => {
+      const mockUpsert = vi.fn();
+      const sdkAPI = createSDKHostAPIBridge(
+        { upsertCategorizationRule: mockUpsert, ...loggerMocks } as unknown as InternalHostAPI,
+        "test-addon",
+        spendingGuard("saveRule"),
+      );
+
+      await expect(
+        sdkAPI.spending.saveRule({
+          ruleKey: "pattern-1",
+          name: "Groceries",
+          pattern: "SUPERMARKET",
+          kind: "unsupported" as never,
+          categoryId: "cat_groceries",
+        }),
+      ).rejects.toThrow("Unsupported spend category kind 'unsupported'");
+      expect(mockUpsert).not.toHaveBeenCalled();
+    });
+
+    it("scopes different addons to different rule ids for the same ruleKey", async () => {
+      const idA = await deriveRuleId("addon-a", "pattern-1");
+      const idB = await deriveRuleId("addon-b", "pattern-1");
+      expect(idA).not.toBe(idB);
+    });
+
+    it("deleteRule calls through directly without probing via list first", async () => {
+      const expectedId = await deriveRuleId("test-addon", "pattern-1");
+      const mockDelete = vi.fn().mockResolvedValue(undefined);
+
+      const sdkAPI = createSDKHostAPIBridge(
+        { deleteCategorizationRuleById: mockDelete, ...loggerMocks } as unknown as InternalHostAPI,
+        "test-addon",
+        spendingGuard("deleteRule"),
+      );
+
+      await sdkAPI.spending.deleteRule("pattern-1");
+
+      expect(mockDelete).toHaveBeenCalledWith(expectedId);
+    });
+
+    it("getRules returns only this addon's rules, converted to kind + categoryId", async () => {
+      const ownId = await deriveRuleId("test-addon", "pattern-1");
+      const otherAddonId = await deriveRuleId("other-addon", "pattern-1");
+      const mockList = vi.fn().mockResolvedValue([
+        { ...savedRule, id: ownId },
+        { ...savedRule, id: otherAddonId },
+        // A non-addon rule (e.g. from Wealthfolio's own rules UI) — excluded by prefix.
+        { ...savedRule, id: "manual-rule" },
+      ]);
+
+      const sdkAPI = createSDKHostAPIBridge(
+        { listCategorizationRules: mockList, ...loggerMocks } as unknown as InternalHostAPI,
+        "test-addon",
+        spendingGuard("getRules"),
+      );
+
+      const rules = await sdkAPI.spending.getRules();
+
+      expect(rules).toEqual([expect.objectContaining({ id: ownId, kind: "expense" })]);
+    });
+
+    it("rerunRules defaults to true (only-uncategorized) when called with no argument", async () => {
+      const mockRerun = vi.fn().mockResolvedValue(3);
+      const sdkAPI = createSDKHostAPIBridge(
+        {
+          rerunCategorizationRulesForAddon: mockRerun,
+          ...loggerMocks,
+        } as unknown as InternalHostAPI,
+        "test-addon",
+        spendingGuard("rerunRules"),
+      );
+
+      await sdkAPI.spending.rerunRules();
+
+      expect(mockRerun).toHaveBeenCalledWith(true);
+    });
+
+    it("enforces the spending permission category", () => {
+      const guard = createPermissionGuard("test-addon", []);
+      const sdkAPI = createSDKHostAPIBridge(
+        { getSpendCategories: vi.fn(), ...loggerMocks } as unknown as InternalHostAPI,
+        "test-addon",
+        guard,
+      );
+
+      expect(() => sdkAPI.spending.getCategories()).toThrow(
+        "Addon 'test-addon' is not allowed to call spending.getCategories",
+      );
+    });
+
+    it("registers the spending permission category with a medium risk level", () => {
+      const category = getPermissionCategory("spending");
+      expect(category?.riskLevel).toBe("medium");
+      expect(category?.functions).toEqual(
+        expect.arrayContaining([
+          "isEnabled",
+          "getCategories",
+          "getRules",
+          "saveRule",
+          "deleteRule",
+          "rerunRules",
+        ]),
+      );
     });
   });
 });

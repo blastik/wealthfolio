@@ -124,8 +124,23 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
     id: 'currency',
     name: 'Exchange Rates',
     description: 'Access to currency exchange rates and conversion data',
-    functions: ['getAll', 'update', 'add'],
+    functions: ['getAll', 'update', 'add', 'getRatesForDates'],
     riskLevel: 'low',
+  },
+  {
+    id: 'spending',
+    name: 'Spend Categorization',
+    description:
+      'View spend categories and manage categorization rules that auto-tag transactions',
+    functions: [
+      'isEnabled',
+      'getCategories',
+      'getRules',
+      'saveRule',
+      'deleteRule',
+      'rerunRules',
+    ],
+    riskLevel: 'medium',
   },
   {
     id: 'financial-planning',
@@ -201,13 +216,6 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
     riskLevel: 'low',
   },
   {
-    id: 'query',
-    name: 'Query Cache',
-    description: 'Access to refresh host application data',
-    functions: ['invalidateQueries', 'refetchQueries'],
-    riskLevel: 'low',
-  },
-  {
     id: 'network',
     name: 'Network Access',
     description:
@@ -215,14 +223,28 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
     functions: ['request'],
     riskLevel: 'high',
   },
-  {
-    id: 'ui',
-    name: 'User Interface',
-    description: 'Access to modify navigation and add UI components',
-    functions: ['sidebar.addItem', 'router.add', 'navigation.navigate', 'onDisable'],
-    riskLevel: 'low',
-  },
 ];
+
+/**
+ * Baseline capabilities that every addon may use without declaring a permission
+ * or obtaining user consent. These are treated as an ignore-filter: legacy manifests
+ * that still declare them keep parsing, but they are never surfaced in consent UI,
+ * never guarded at runtime, and never count as a permission escalation on update.
+ */
+export const BASELINE_PERMISSION_CATEGORIES = [
+  'ui',
+  'query',
+  'toast',
+  'logger',
+  'storage',
+] as const;
+
+/**
+ * Check whether a permission category is an implicit baseline capability.
+ */
+export function isBaselineCategory(id: string): boolean {
+  return (BASELINE_PERMISSION_CATEGORIES as readonly string[]).includes(id);
+}
 
 /**
  * Helper functions for permission management

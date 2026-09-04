@@ -17,11 +17,12 @@ use wealthfolio_core::sync::{
     SyncOutboxEvent, SyncOutboxStatus, APP_SYNC_TABLES,
 };
 
+use crate::addons::addon_storage_id;
 use crate::db::{get_connection, WriteHandle};
 use crate::errors::StorageError;
 use crate::schema::{
-    spending_preset_rule_deletions, sync_applied_events, sync_cursor, sync_device_config,
-    sync_engine_state, sync_entity_metadata, sync_outbox, sync_table_state,
+    addon_storage, spending_preset_rule_deletions, sync_applied_events, sync_cursor,
+    sync_device_config, sync_engine_state, sync_entity_metadata, sync_outbox, sync_table_state,
 };
 use crate::spending::deterministic_ids::preset_rule_deletion_id;
 use crate::sync::broker_activity_patch::{
@@ -561,6 +562,26 @@ fn normalize_payload_fields(
     Ok(normalized_fields)
 }
 
+fn synced_snapshot_payload_is_safe(fields: &[(String, serde_json::Value)]) -> bool {
+    let source = fields
+        .iter()
+        .find(|(column, _)| column == "source")
+        .and_then(|(_, value)| value.as_str());
+    if !matches!(source, Some("MANUAL_ENTRY" | "CSV_IMPORT")) {
+        return false;
+    }
+
+    let Some(snapshot_date) = fields
+        .iter()
+        .find(|(column, _)| column == "snapshot_date")
+        .and_then(|(_, value)| value.as_str())
+    else {
+        return false;
+    };
+    chrono::NaiveDate::parse_from_str(snapshot_date, "%Y-%m-%d")
+        .is_ok_and(|date| date.format("%Y-%m-%d").to_string() == snapshot_date)
+}
+
 fn normalize_outbox_payload(payload: serde_json::Value) -> Result<serde_json::Value> {
     let serde_json::Value::Object(fields) = payload else {
         return Ok(payload);
@@ -949,6 +970,9 @@ fn entity_storage_mapping(entity: &SyncEntity) -> Option<(&'static str, &'static
         SyncEntity::BudgetGroupAssignment => Some(("budget_group_assignments", "id")),
         SyncEntity::BudgetTarget => Some(("budget_targets", "id")),
         SyncEntity::BudgetRolloverSetting => Some(("budget_rollover_settings", "id")),
+        // Composite primary key; handled by custom branch in apply_remote_event_lww_tx.
+        SyncEntity::AddonStorage => None,
+        SyncEntity::AssetLogo => Some(("asset_logos", "asset_id")),
     }
 }
 
@@ -1414,7 +1438,15 @@ fn should_apply_against_metadata(
     event_id: &str,
 ) -> Result<bool> {
     let previous_op = enum_from_db::<SyncOperation>(&meta.last_op)?;
-    if entity == SyncEntity::SpendingPresetRuleDeletion {
+    // Pure last-writer-wins entities: a delete is just another write to a key
+    // that can be legitimately re-used, NOT a permanent tombstone. Every op
+    // (create/update/delete) competes on timestamp+event_id. The delete-wins /
+    // tombstone branches below would otherwise let a stale delete clobber a newer
+    // value and permanently swallow any later re-create of a deleted key.
+    if matches!(
+        entity,
+        SyncEntity::SpendingPresetRuleDeletion | SyncEntity::AddonStorage | SyncEntity::AssetLogo
+    ) {
         Ok(should_apply_lww(
             &meta.last_client_timestamp,
             &meta.last_event_id,
@@ -1646,6 +1678,72 @@ fn apply_spending_preset_rule_deletion_event(
             let deleted_at = preset_rule_payload_str(payload_json, "deleted_at", "deletedAt")
                 .unwrap_or(client_timestamp);
             upsert_preset_rule_deletion_tx(conn, &preset_id, &rule_key, rule_id, deleted_at)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn addon_storage_identity_from_payload(
+    payload_json: &serde_json::Value,
+) -> Option<(String, String)> {
+    let addon_id = payload_json
+        .get("addon_id")
+        .or_else(|| payload_json.get("addonId"))
+        .and_then(serde_json::Value::as_str)?;
+    let key = payload_json
+        .get("key")
+        .and_then(serde_json::Value::as_str)?;
+    Some((addon_id.to_string(), key.to_string()))
+}
+
+fn apply_addon_storage_event(
+    conn: &mut SqliteConnection,
+    entity_id: &str,
+    op: SyncOperation,
+    payload_json: &serde_json::Value,
+    _client_timestamp: &str,
+) -> Result<()> {
+    let Some((addon_id, key)) = addon_storage_identity_from_payload(payload_json) else {
+        return Err(Error::Database(DatabaseError::Internal(
+            "addon_storage payload must include addon_id/key".to_string(),
+        )));
+    };
+    let expected_entity_id = addon_storage_id(&addon_id, &key);
+    if expected_entity_id != entity_id {
+        return Err(Error::Database(DatabaseError::Internal(format!(
+            "addon_storage entity_id '{}' does not match payload key '{}'",
+            entity_id, expected_entity_id
+        ))));
+    }
+
+    match op {
+        SyncOperation::Delete => {
+            diesel::delete(
+                addon_storage::table
+                    .filter(addon_storage::addon_id.eq(&addon_id))
+                    .filter(addon_storage::key.eq(&key)),
+            )
+            .execute(conn)
+            .map_err(StorageError::from)?;
+        }
+        SyncOperation::Create | SyncOperation::Update => {
+            let value = payload_json
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Error::Database(DatabaseError::Internal(
+                        "addon_storage payload must include value".to_string(),
+                    ))
+                })?;
+            diesel::replace_into(addon_storage::table)
+                .values((
+                    addon_storage::addon_id.eq(&addon_id),
+                    addon_storage::key.eq(&key),
+                    addon_storage::value.eq(value),
+                ))
+                .execute(conn)
+                .map_err(StorageError::from)?;
         }
     }
 
@@ -1941,6 +2039,15 @@ fn apply_remote_event_lww_tx(
                 &client_timestamp_value,
             )?;
             mark_table_incremental_applied_tx(conn, "spending_preset_rule_deletions")?;
+        } else if entity == SyncEntity::AddonStorage {
+            apply_addon_storage_event(
+                conn,
+                &entity_id_value,
+                op,
+                &payload_json,
+                &client_timestamp_value,
+            )?;
+            mark_table_incremental_applied_tx(conn, "addon_storage")?;
         } else if let Some((table_name, pk_name)) = entity_storage_mapping(&entity) {
             match op {
                 SyncOperation::Delete => {
@@ -1974,6 +2081,13 @@ fn apply_remote_event_lww_tx(
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     let mut fields = normalize_payload_fields(conn, table_name, fields)?;
+                    if entity == SyncEntity::Snapshot && !synced_snapshot_payload_is_safe(&fields) {
+                        log::warn!(
+                            "Skipping synced snapshot '{}' with an unsupported source or malformed date",
+                            entity_id_value
+                        );
+                        applied_entity_change = false;
+                    }
                     if let Some((_, payload_pk)) = fields.iter().find(|(k, _)| k == pk_name) {
                         if !payload_value_matches_entity_id(payload_pk, &entity_id_value) {
                             return Err(Error::Database(DatabaseError::Internal(format!(
@@ -3203,6 +3317,20 @@ impl AppSyncRepository {
                         });
                     }
 
+                    // A snapshot from a client predating `asset_logos` lacks the table, so
+                    // it is skipped above — but `DELETE FROM assets` still cascades through
+                    // `asset_logos.asset_id ON DELETE CASCADE`. Stash local logos and put
+                    // back the ones whose asset survived the restore.
+                    let has_plan = |name: &str| restore_plans.iter().any(|plan| plan.table == name);
+                    let keep_asset_logos = has_plan("assets") && !has_plan("asset_logos");
+                    if keep_asset_logos {
+                        diesel::sql_query(
+                            "CREATE TEMP TABLE _keep_asset_logos AS SELECT * FROM asset_logos",
+                        )
+                        .execute(conn)
+                        .map_err(|err| restore_sql_error("clear", "asset_logos", err))?;
+                    }
+
                     for plan in restore_plans.iter().rev() {
                         diesel::sql_query(&plan.clear_sql)
                             .execute(conn)
@@ -3234,6 +3362,17 @@ impl AppSyncRepository {
                             .execute(conn)
                             .map_err(StorageError::from)?;
                     }
+                    if keep_asset_logos {
+                        diesel::sql_query(
+                            "INSERT OR IGNORE INTO asset_logos SELECT * FROM _keep_asset_logos WHERE asset_id IN (SELECT id FROM assets)",
+                        )
+                        .execute(conn)
+                        .map_err(|err| restore_sql_error("copy", "asset_logos", err))?;
+                        diesel::sql_query("DROP TABLE _keep_asset_logos")
+                            .execute(conn)
+                            .map_err(|err| restore_sql_error("copy", "asset_logos", err))?;
+                    }
+
                     ensure_no_foreign_key_violations_tx(
                         conn,
                         restore_plans.iter().map(|plan| plan.table.as_str()),
@@ -3320,7 +3459,7 @@ mod tests {
     use crate::db::{create_pool, get_connection, init, run_migrations, write_actor::spawn_writer};
     use crate::goals::GoalRepository;
     use crate::schema::{
-        accounts, activities, app_settings, assets, goals, goals_allocation,
+        accounts, activities, app_settings, asset_logos, assets, goals, goals_allocation,
         import_account_templates, import_templates, platforms, spending_preset_rule_deletions,
         sync_applied_events, sync_device_config, sync_entity_metadata, sync_outbox, taxonomies,
         taxonomy_categories,
@@ -3332,6 +3471,37 @@ mod tests {
     use wealthfolio_core::accounts::account_types;
     use wealthfolio_core::activities::{ActivityRepositoryTrait, ActivityUpsert};
     use wealthfolio_core::goals::{GoalRepositoryTrait, GoalSummaryUpdate};
+
+    #[test]
+    fn synced_snapshot_payload_accepts_only_user_sources_and_canonical_dates() {
+        let fields = |source: &str, date: &str| {
+            vec![
+                ("source".to_string(), serde_json::json!(source)),
+                ("snapshot_date".to_string(), serde_json::json!(date)),
+            ]
+        };
+
+        assert!(synced_snapshot_payload_is_safe(&fields(
+            "MANUAL_ENTRY",
+            "2026-08-05"
+        )));
+        assert!(synced_snapshot_payload_is_safe(&fields(
+            "CSV_IMPORT",
+            "2026-08-05"
+        )));
+        assert!(!synced_snapshot_payload_is_safe(&fields(
+            "SYNTHETIC",
+            "2026-08-05"
+        )));
+        assert!(!synced_snapshot_payload_is_safe(&fields(
+            "BROKER_IMPORTED",
+            "2026-08-05"
+        )));
+        assert!(!synced_snapshot_payload_is_safe(&fields(
+            "CSV_IMPORT",
+            "not-a-date"
+        )));
+    }
 
     fn setup_db() -> (
         Arc<Pool<r2d2::ConnectionManager<SqliteConnection>>>,
@@ -4848,6 +5018,79 @@ mod tests {
 
         assert_eq!(repo.get_cursor().expect("cursor"), 88);
         assert_eq!(count_account_rows(&pool, "acc-from-snapshot"), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_of_assets_keeps_local_asset_logos_when_snapshot_lacks_table() {
+        #[derive(diesel::QueryableByName)]
+        struct CountRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            c: i64,
+        }
+
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let kept_asset_id = "asset-logo-kept";
+        let dropped_asset_id = "asset-logo-dropped";
+
+        // v1 snapshot: has the kept asset but no asset_logos table at all.
+        let snapshot_path = {
+            let app_data = tempdir()
+                .expect("tempdir")
+                .keep()
+                .to_string_lossy()
+                .to_string();
+            let db_path = init(&app_data).expect("init db");
+            run_migrations(&db_path).expect("migrate db");
+            let pool = create_pool(&db_path).expect("create pool");
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_asset_kind_for_test(&mut conn, kept_asset_id, "INVESTMENT")
+                .expect("insert asset");
+            diesel::sql_query("DROP TABLE asset_logos")
+                .execute(&mut conn)
+                .expect("drop asset_logos");
+            db_path
+        };
+
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            for asset_id in [kept_asset_id, dropped_asset_id] {
+                insert_asset_kind_for_test(&mut conn, asset_id, "INVESTMENT")
+                    .expect("insert local asset");
+                diesel::sql_query(format!(
+                    "INSERT INTO asset_logos (asset_id, mime_type, data, sha256, width, height, created_at, updated_at)
+                     VALUES ('{}', 'image/png', 'AAAA', 'abc', 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    escape_sqlite_str(asset_id)
+                ))
+                .execute(&mut conn)
+                .expect("insert local logo");
+            }
+        }
+
+        repo.restore_snapshot_tables_from_file(
+            snapshot_path,
+            vec!["assets".to_string()],
+            92,
+            "device-logo-keep".to_string(),
+            Some(1),
+        )
+        .await
+        .expect("restore snapshot");
+
+        assert_eq!(count_asset_rows(&pool, kept_asset_id), 1);
+        assert_eq!(count_asset_rows(&pool, dropped_asset_id), 0);
+        let mut conn = get_connection(&pool).expect("conn");
+        let count_logo = |conn: &mut SqliteConnection, asset_id: &str| -> i64 {
+            let row: CountRow = diesel::sql_query(format!(
+                "SELECT COUNT(*) AS c FROM asset_logos WHERE asset_id = '{}'",
+                escape_sqlite_str(asset_id)
+            ))
+            .get_result(conn)
+            .expect("count logos");
+            row.c
+        };
+        assert_eq!(count_logo(&mut conn, kept_asset_id), 1);
+        assert_eq!(count_logo(&mut conn, dropped_asset_id), 0);
     }
 
     #[tokio::test]
@@ -7817,6 +8060,449 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replay_addon_storage_applies_and_deletes() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let entity_id = addon_storage_id("addon-a", "prefs");
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id.clone(),
+                SyncOperation::Update,
+                "evt-addon-storage-upsert".to_string(),
+                "2026-02-15T00:00:00Z".to_string(),
+                1,
+                serde_json::json!({
+                    "addonId": "addon-a",
+                    "key": "prefs",
+                    "value": "v1"
+                }),
+            )
+            .await
+            .expect("apply addon storage upsert");
+        assert!(applied);
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let value: Option<String> = addon_storage::table
+            .filter(addon_storage::addon_id.eq("addon-a"))
+            .filter(addon_storage::key.eq("prefs"))
+            .select(addon_storage::value)
+            .first::<String>(&mut conn)
+            .optional()
+            .expect("query addon storage");
+        assert_eq!(value.as_deref(), Some("v1"));
+        drop(conn);
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id,
+                SyncOperation::Delete,
+                "evt-addon-storage-delete".to_string(),
+                "2026-02-15T00:00:01Z".to_string(),
+                2,
+                serde_json::json!({
+                    "addonId": "addon-a",
+                    "key": "prefs"
+                }),
+            )
+            .await
+            .expect("apply addon storage delete");
+        assert!(applied);
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let count: i64 = addon_storage::table
+            .filter(addon_storage::addon_id.eq("addon-a"))
+            .filter(addon_storage::key.eq("prefs"))
+            .count()
+            .get_result(&mut conn)
+            .expect("count addon storage");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn replay_addon_storage_stale_delete_does_not_clobber_newer_value() {
+        // A delete is just another write for a reusable key: an older delete must
+        // NOT wipe a newer value. (Under the old tombstone logic a delete always
+        // won over a prior non-delete regardless of timestamp.)
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let entity_id = addon_storage_id("addon-a", "prefs");
+
+        assert!(repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id.clone(),
+                SyncOperation::Update,
+                "evt-update-new".to_string(),
+                "2026-02-15T00:00:05Z".to_string(),
+                1,
+                serde_json::json!({ "addonId": "addon-a", "key": "prefs", "value": "v2" }),
+            )
+            .await
+            .expect("apply newer update"));
+
+        // Older delete arrives after the newer update — must be rejected by LWW.
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id,
+                SyncOperation::Delete,
+                "evt-delete-stale".to_string(),
+                "2026-02-15T00:00:01Z".to_string(),
+                2,
+                serde_json::json!({ "addonId": "addon-a", "key": "prefs" }),
+            )
+            .await
+            .expect("apply stale delete");
+        assert!(!applied, "a stale delete must not be applied");
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let value: Option<String> = addon_storage::table
+            .filter(addon_storage::addon_id.eq("addon-a"))
+            .filter(addon_storage::key.eq("prefs"))
+            .select(addon_storage::value)
+            .first::<String>(&mut conn)
+            .optional()
+            .expect("query addon storage");
+        assert_eq!(
+            value.as_deref(),
+            Some("v2"),
+            "newer value must survive a stale delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_addon_storage_newer_update_after_older_delete_reapplies() {
+        // A deleted key can be legitimately re-created: a newer update after an
+        // older delete must apply. (Under the old tombstone logic, once last_op
+        // was Delete, every later create/update was permanently swallowed.)
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let entity_id = addon_storage_id("addon-a", "prefs");
+
+        assert!(repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id.clone(),
+                SyncOperation::Delete,
+                "evt-delete-old".to_string(),
+                "2026-02-15T00:00:01Z".to_string(),
+                1,
+                serde_json::json!({ "addonId": "addon-a", "key": "prefs" }),
+            )
+            .await
+            .expect("apply older delete"));
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                entity_id,
+                SyncOperation::Update,
+                "evt-update-newer".to_string(),
+                "2026-02-15T00:00:05Z".to_string(),
+                2,
+                serde_json::json!({ "addonId": "addon-a", "key": "prefs", "value": "v3" }),
+            )
+            .await
+            .expect("apply newer update");
+        assert!(
+            applied,
+            "a newer update after an older delete must be applied"
+        );
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let value: Option<String> = addon_storage::table
+            .filter(addon_storage::addon_id.eq("addon-a"))
+            .filter(addon_storage::key.eq("prefs"))
+            .select(addon_storage::value)
+            .first::<String>(&mut conn)
+            .optional()
+            .expect("query addon storage");
+        assert_eq!(
+            value.as_deref(),
+            Some("v3"),
+            "re-created key must hold the newer value"
+        );
+    }
+
+    fn asset_logo_payload(asset_id: &str, data: &str, updated_at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "asset_id": asset_id,
+            "mime_type": "image/png",
+            "data": data,
+            "sha256": format!("sha-{data}"),
+            "width": 1,
+            "height": 1,
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "updated_at": updated_at,
+        })
+    }
+
+    fn asset_logo_data(
+        pool: &Arc<Pool<r2d2::ConnectionManager<SqliteConnection>>>,
+        asset_id: &str,
+    ) -> Option<String> {
+        let mut conn = get_connection(pool).expect("conn");
+        asset_logos::table
+            .find(asset_id)
+            .select(asset_logos::data)
+            .first::<String>(&mut conn)
+            .optional()
+            .expect("query asset logo")
+    }
+
+    #[tokio::test]
+    async fn replay_asset_logo_upserts_and_deletes() {
+        let (pool, writer) = setup_db();
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_asset_kind_for_test(&mut conn, "asset-logo-a", "INVESTMENT").expect("asset");
+        }
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Create,
+                "evt-logo-create".to_string(),
+                "2026-09-02T00:00:00Z".to_string(),
+                1,
+                asset_logo_payload("asset-logo-a", "AAAA", "2026-09-02T00:00:00+00:00"),
+            )
+            .await
+            .expect("apply logo create");
+        assert!(applied);
+        assert_eq!(
+            asset_logo_data(&pool, "asset-logo-a").as_deref(),
+            Some("AAAA")
+        );
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Update,
+                "evt-logo-update".to_string(),
+                "2026-09-02T00:00:01Z".to_string(),
+                2,
+                asset_logo_payload("asset-logo-a", "BBBB", "2026-09-02T00:00:01+00:00"),
+            )
+            .await
+            .expect("apply logo update");
+        assert!(applied);
+        assert_eq!(
+            asset_logo_data(&pool, "asset-logo-a").as_deref(),
+            Some("BBBB")
+        );
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Delete,
+                "evt-logo-delete".to_string(),
+                "2026-09-02T00:00:02Z".to_string(),
+                3,
+                serde_json::json!({ "asset_id": "asset-logo-a" }),
+            )
+            .await
+            .expect("apply logo delete");
+        assert!(applied);
+        assert_eq!(asset_logo_data(&pool, "asset-logo-a"), None);
+    }
+
+    #[tokio::test]
+    async fn replay_asset_logo_reupload_after_delete_applies() {
+        // asset_id is a reusable key: delete = reset, a later re-upload must win.
+        let (pool, writer) = setup_db();
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_asset_kind_for_test(&mut conn, "asset-logo-a", "INVESTMENT").expect("asset");
+        }
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        assert!(repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Create,
+                "evt-logo-create".to_string(),
+                "2026-09-02T00:00:00Z".to_string(),
+                1,
+                asset_logo_payload("asset-logo-a", "AAAA", "2026-09-02T00:00:00+00:00"),
+            )
+            .await
+            .expect("create"));
+        assert!(repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Delete,
+                "evt-logo-delete".to_string(),
+                "2026-09-02T00:00:01Z".to_string(),
+                2,
+                serde_json::json!({ "asset_id": "asset-logo-a" }),
+            )
+            .await
+            .expect("delete"));
+        assert_eq!(asset_logo_data(&pool, "asset-logo-a"), None);
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Create,
+                "evt-logo-recreate".to_string(),
+                "2026-09-02T00:00:02Z".to_string(),
+                3,
+                asset_logo_payload("asset-logo-a", "CCCC", "2026-09-02T00:00:02+00:00"),
+            )
+            .await
+            .expect("re-upload after delete");
+        assert!(
+            applied,
+            "re-upload after delete must apply (pure LWW, no tombstone)"
+        );
+        assert_eq!(
+            asset_logo_data(&pool, "asset-logo-a").as_deref(),
+            Some("CCCC")
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_asset_logo_stale_delete_does_not_clobber_newer_upload() {
+        let (pool, writer) = setup_db();
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_asset_kind_for_test(&mut conn, "asset-logo-a", "INVESTMENT").expect("asset");
+        }
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        assert!(repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Update,
+                "evt-logo-newer".to_string(),
+                "2026-09-02T00:00:05Z".to_string(),
+                1,
+                asset_logo_payload("asset-logo-a", "NEWER", "2026-09-02T00:00:05+00:00"),
+            )
+            .await
+            .expect("newer upload"));
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Delete,
+                "evt-logo-stale-delete".to_string(),
+                "2026-09-02T00:00:01Z".to_string(),
+                2,
+                serde_json::json!({ "asset_id": "asset-logo-a" }),
+            )
+            .await
+            .expect("stale delete");
+        assert!(!applied, "a stale delete must not be applied");
+        assert_eq!(
+            asset_logo_data(&pool, "asset-logo-a").as_deref(),
+            Some("NEWER")
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_asset_logo_rejects_pk_mismatch() {
+        let (pool, writer) = setup_db();
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_asset_kind_for_test(&mut conn, "asset-logo-a", "INVESTMENT").expect("asset");
+            insert_asset_kind_for_test(&mut conn, "asset-logo-b", "INVESTMENT").expect("asset");
+        }
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        let err = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "asset-logo-a".to_string(),
+                SyncOperation::Create,
+                "evt-logo-mismatch".to_string(),
+                "2026-09-02T00:00:00Z".to_string(),
+                1,
+                asset_logo_payload("asset-logo-b", "AAAA", "2026-09-02T00:00:00+00:00"),
+            )
+            .await
+            .expect_err("pk mismatch should fail");
+        assert!(
+            err.to_string().contains("does not match entity_id"),
+            "{err}"
+        );
+        assert_eq!(asset_logo_data(&pool, "asset-logo-a"), None);
+        assert_eq!(asset_logo_data(&pool, "asset-logo-b"), None);
+    }
+
+    #[tokio::test]
+    async fn replay_asset_logo_for_missing_asset_is_foreign_key_violation() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        let err = repo
+            .apply_remote_event_lww(
+                SyncEntity::AssetLogo,
+                "ghost-asset".to_string(),
+                SyncOperation::Create,
+                "evt-logo-orphan".to_string(),
+                "2026-09-02T00:00:00Z".to_string(),
+                1,
+                asset_logo_payload("ghost-asset", "AAAA", "2026-09-02T00:00:00+00:00"),
+            )
+            .await
+            .expect_err("missing asset should fail");
+        let message = err.to_string();
+        assert!(message.contains("entity=AssetLogo"), "{message}");
+        assert!(message.contains("table=asset_logos"), "{message}");
+        assert!(
+            message.to_ascii_lowercase().contains("foreign key"),
+            "{message}"
+        );
+        assert_eq!(asset_logo_data(&pool, "ghost-asset"), None);
+    }
+
+    #[tokio::test]
+    async fn replay_addon_storage_rejects_mismatched_entity_id() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        let err = repo
+            .apply_remote_event_lww(
+                SyncEntity::AddonStorage,
+                "wrong-entity-id".to_string(),
+                SyncOperation::Update,
+                "evt-addon-storage-mismatch".to_string(),
+                "2026-02-15T00:00:00Z".to_string(),
+                1,
+                serde_json::json!({
+                    "addonId": "addon-a",
+                    "key": "prefs",
+                    "value": "v1"
+                }),
+            )
+            .await
+            .expect_err("mismatched entity id should fail replay");
+
+        assert!(err.to_string().contains("does not match payload key"));
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let count: i64 = addon_storage::table
+            .count()
+            .get_result(&mut conn)
+            .expect("count addon storage");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
     async fn replay_batch_skips_unsupported_spending_setting_without_aborting() {
         let (pool, writer) = setup_db();
         let repo = AppSyncRepository::new(pool.clone(), writer);
@@ -8371,5 +9057,73 @@ mod tests {
         .get_result(&mut conn)
         .expect("snapshot position asset");
         assert_eq!(row.asset_id, "asset-sync-snap-new");
+    }
+
+    #[tokio::test]
+    async fn replay_skips_legacy_source_and_malformed_snapshot_date() {
+        #[derive(diesel::QueryableByName)]
+        struct CountRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            c: i64,
+        }
+
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+        insert_account_for_test(&mut conn, "acc-sync-invalid").expect("insert account");
+        drop(conn);
+
+        let payload = |id: &str, source: &str, snapshot_date: &str| {
+            serde_json::json!({
+                "id": id,
+                "accountId": "acc-sync-invalid",
+                "snapshotDate": snapshot_date,
+                "currency": "USD",
+                "positions": "{}",
+                "cashBalances": "{}",
+                "costBasis": "0",
+                "netContribution": "0",
+                "calculatedAt": "2026-02-01T00:00:00Z",
+                "netContributionBase": "0",
+                "cashTotalAccountCurrency": "0",
+                "cashTotalBaseCurrency": "0",
+                "source": source,
+            })
+        };
+
+        let legacy_applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::Snapshot,
+                "snap-legacy-source".to_string(),
+                SyncOperation::Create,
+                "evt-legacy-source".to_string(),
+                "2026-02-01T00:00:00Z".to_string(),
+                1,
+                payload("snap-legacy-source", "SYNTHETIC", "2026-01-01"),
+            )
+            .await
+            .expect("legacy snapshot event should be acknowledged");
+        let malformed_applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::Snapshot,
+                "snap-malformed-date".to_string(),
+                SyncOperation::Create,
+                "evt-malformed-date".to_string(),
+                "2026-02-01T00:00:01Z".to_string(),
+                2,
+                payload("snap-malformed-date", "CSV_IMPORT", "not-a-date"),
+            )
+            .await
+            .expect("malformed snapshot event should be acknowledged");
+
+        assert!(!legacy_applied);
+        assert!(!malformed_applied);
+        let mut conn = get_connection(&pool).expect("conn");
+        let row: CountRow = diesel::sql_query(
+            "SELECT COUNT(*) AS c FROM holdings_snapshots WHERE account_id = 'acc-sync-invalid'",
+        )
+        .get_result(&mut conn)
+        .expect("count snapshots");
+        assert_eq!(row.c, 0);
     }
 }

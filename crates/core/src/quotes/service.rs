@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use log::{debug, info};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -292,6 +292,13 @@ pub struct NoQuoteReason {
     pub message: String,
 }
 
+/// Request-local assets and sparse quotes used by transfer economics.
+#[derive(Debug, Clone, Default)]
+pub struct SparseAssetMarketFacts {
+    pub assets_by_id: HashMap<String, Asset>,
+    pub quotes_by_request: HashMap<(String, NaiveDate), Quote>,
+}
+
 /// Unified trait for all quote operations.
 #[async_trait]
 pub trait QuoteServiceTrait: Send + Sync {
@@ -305,12 +312,33 @@ pub trait QuoteServiceTrait: Send + Sync {
     /// Get the latest quotes for multiple symbols.
     fn get_latest_quotes(&self, symbols: &[String]) -> Result<HashMap<String, Quote>>;
 
+    /// Get the earliest and latest persisted quote dates across all sources.
+    fn get_quote_bounds_for_assets(
+        &self,
+        asset_ids: &[String],
+    ) -> Result<HashMap<String, (NaiveDate, NaiveDate)>> {
+        let latest = self.get_latest_quotes(asset_ids)?;
+        Ok(latest
+            .into_iter()
+            .map(|(asset_id, quote)| {
+                let date = quote.timestamp.date_naive();
+                (asset_id, (date, date))
+            })
+            .collect())
+    }
+
     /// Get the latest quotes for multiple symbols, restricted to rows with `day <= as_of`.
     fn get_latest_quotes_as_of(
         &self,
         symbols: &[String],
         as_of: chrono::NaiveDate,
     ) -> Result<HashMap<String, Quote>>;
+
+    /// Loads each requested asset once and resolves only the requested quote dates.
+    fn get_sparse_asset_market_facts(
+        &self,
+        requests: &[(String, NaiveDate)],
+    ) -> Result<SparseAssetMarketFacts>;
 
     /// Get latest quotes with backend-computed staleness metadata.
     fn get_latest_quotes_snapshot(
@@ -337,6 +365,34 @@ pub trait QuoteServiceTrait: Send + Sync {
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<Vec<Quote>>;
+
+    /// Gets only persisted quote keyframes plus one pre-range seed per asset.
+    /// Unlike `get_quotes_in_range_filled`, this does not allocate a quote for every day.
+    fn get_sparse_quotes_in_range(
+        &self,
+        symbols: &HashSet<String>,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<Quote>> {
+        self.get_quotes_in_range_filled(symbols, start, end)
+    }
+
+    /// Gets sparse persisted quotes with an independent inclusive start per asset.
+    fn get_sparse_quotes_in_range_by_asset(
+        &self,
+        asset_start_dates: &BTreeMap<String, NaiveDate>,
+        end: NaiveDate,
+    ) -> Result<Vec<Quote>> {
+        let mut quotes = Vec::new();
+        for (asset_id, start) in asset_start_dates {
+            quotes.extend(self.get_sparse_quotes_in_range(
+                &HashSet::from([asset_id.clone()]),
+                *start,
+                end,
+            )?);
+        }
+        Ok(quotes)
+    }
 
     /// Get quotes for symbols within a date range, with gap filling.
     ///
@@ -942,6 +998,14 @@ where
         Ok(quotes)
     }
 
+    fn get_quote_bounds_for_assets(
+        &self,
+        asset_ids: &[String],
+    ) -> Result<HashMap<String, (NaiveDate, NaiveDate)>> {
+        self.quote_store
+            .get_quote_bounds_for_assets_any_source(asset_ids)
+    }
+
     fn get_latest_quotes_as_of(
         &self,
         symbols: &[String],
@@ -961,6 +1025,49 @@ where
         }
 
         Ok(quotes)
+    }
+
+    fn get_sparse_asset_market_facts(
+        &self,
+        requests: &[(String, NaiveDate)],
+    ) -> Result<SparseAssetMarketFacts> {
+        let mut requests: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .filter(|(asset_id, _)| !asset_id.is_empty())
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        requests.sort();
+
+        if requests.is_empty() {
+            return Ok(SparseAssetMarketFacts::default());
+        }
+
+        let mut asset_ids: Vec<String> = requests
+            .iter()
+            .map(|(asset_id, _)| asset_id.clone())
+            .collect();
+        asset_ids.dedup();
+
+        let assets = self.asset_repo.list_by_asset_ids(&asset_ids)?;
+        let assets_by_id: HashMap<String, Asset> = assets
+            .into_iter()
+            .map(|asset| (asset.id.clone(), asset))
+            .collect();
+        let mut quotes_by_request = self
+            .quote_store
+            .get_latest_quotes_for_asset_dates(&requests)?;
+        for ((asset_id, _), quote) in quotes_by_request.iter_mut() {
+            if let Some(asset) = assets_by_id.get(asset_id) {
+                reconcile_quote_currency(quote, asset);
+            }
+        }
+
+        Ok(SparseAssetMarketFacts {
+            assets_by_id,
+            quotes_by_request,
+        })
     }
 
     fn get_latest_quotes_snapshot(
@@ -996,6 +1103,9 @@ where
                 let effective_today = time_utils::market_effective_date(
                     now,
                     asset.and_then(|a| a.instrument_exchange_mic.as_deref()),
+                    asset
+                        .map(|a| matches!(a.instrument_type, Some(InstrumentType::Crypto)))
+                        .unwrap_or(false),
                 );
                 let snapshot = if let Some(quote) = quotes.get(asset_id).cloned() {
                     let quote_day = quote.timestamp.date_naive();
@@ -1113,18 +1223,138 @@ where
             .into_iter()
             .map(|asset| (asset.id.clone(), asset))
             .collect();
+        let asset_ids: Vec<AssetId> = ids.iter().cloned().map(AssetId::new).collect();
 
-        let mut all_quotes = Vec::new();
-        for symbol in symbols {
-            let mut quotes = self.quote_store.get_quotes_in_range(symbol, start, end)?;
-            if let Some(asset) = assets_by_id.get(symbol) {
-                for quote in quotes.iter_mut() {
-                    reconcile_quote_currency(quote, asset);
-                }
+        let mut all_quotes =
+            self.quote_store
+                .range_batch(&asset_ids, Day::new(start), Day::new(end), None)?;
+        for quote in &mut all_quotes {
+            if let Some(asset) = assets_by_id.get(&quote.asset_id) {
+                reconcile_quote_currency(quote, asset);
             }
-            all_quotes.extend(quotes);
         }
         Ok(all_quotes)
+    }
+
+    fn get_sparse_quotes_in_range(
+        &self,
+        symbols: &HashSet<String>,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<Quote>> {
+        if symbols.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        const ASSET_BATCH_SIZE: usize = 400;
+        let mut ids: Vec<String> = symbols.iter().cloned().collect();
+        ids.sort();
+        let assets = self.asset_repo.list_by_asset_ids(&ids)?;
+        let assets_by_id: HashMap<String, Asset> = assets
+            .into_iter()
+            .map(|asset| (asset.id.clone(), asset))
+            .collect();
+
+        let seed_date = start.checked_sub_signed(Duration::days(1));
+        let mut quotes = Vec::new();
+        for batch in ids.chunks(ASSET_BATCH_SIZE) {
+            let range_asset_ids: Vec<AssetId> = batch.iter().cloned().map(AssetId::new).collect();
+            quotes.extend(self.quote_store.range_batch(
+                &range_asset_ids,
+                Day::new(start),
+                Day::new(end),
+                None,
+            )?);
+            if let Some(seed_date) = seed_date {
+                quotes.extend(
+                    self.quote_store
+                        .get_latest_quotes_as_of(batch, seed_date)?
+                        .into_values(),
+                );
+            }
+        }
+
+        for quote in &mut quotes {
+            if let Some(asset) = assets_by_id.get(&quote.asset_id) {
+                reconcile_quote_currency(quote, asset);
+            }
+        }
+        quotes.sort_by(|left, right| {
+            left.asset_id
+                .cmp(&right.asset_id)
+                .then_with(|| left.timestamp.cmp(&right.timestamp))
+        });
+        quotes.dedup_by(|left, right| {
+            left.asset_id == right.asset_id
+                && left.timestamp.date_naive() == right.timestamp.date_naive()
+        });
+        Ok(quotes)
+    }
+
+    fn get_sparse_quotes_in_range_by_asset(
+        &self,
+        asset_start_dates: &BTreeMap<String, NaiveDate>,
+        end: NaiveDate,
+    ) -> Result<Vec<Quote>> {
+        if asset_start_dates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        const ASSET_BATCH_SIZE: usize = 400;
+        let ids: Vec<String> = asset_start_dates.keys().cloned().collect();
+        let assets = self.asset_repo.list_by_asset_ids(&ids)?;
+        let assets_by_id: HashMap<String, Asset> = assets
+            .into_iter()
+            .map(|asset| (asset.id.clone(), asset))
+            .collect();
+
+        let mut quotes = Vec::new();
+        for batch in ids.chunks(ASSET_BATCH_SIZE) {
+            let range_requests: Vec<_> = batch
+                .iter()
+                .map(|asset_id| {
+                    (
+                        AssetId::new(asset_id.clone()),
+                        Day::new(asset_start_dates[asset_id]),
+                    )
+                })
+                .collect();
+            quotes.extend(self.quote_store.range_batch_from_dates(
+                &range_requests,
+                Day::new(end),
+                None,
+            )?);
+
+            let seed_requests: Vec<_> = batch
+                .iter()
+                .filter_map(|asset_id| {
+                    asset_start_dates[asset_id]
+                        .checked_sub_signed(Duration::days(1))
+                        .map(|seed_date| (asset_id.clone(), seed_date))
+                })
+                .collect();
+            quotes.extend(
+                self.quote_store
+                    .get_latest_quotes_as_of_dates(&seed_requests)?
+                    .into_values(),
+            );
+        }
+
+        for quote in &mut quotes {
+            if let Some(asset) = assets_by_id.get(&quote.asset_id) {
+                reconcile_quote_currency(quote, asset);
+            }
+        }
+        quotes.sort_by(|left, right| {
+            left.asset_id
+                .cmp(&right.asset_id)
+                .then_with(|| left.timestamp.cmp(&right.timestamp))
+        });
+        quotes.dedup_by(|left, right| {
+            left.asset_id == right.asset_id
+                && left.timestamp.date_naive() == right.timestamp.date_naive()
+        });
+        Ok(quotes)
     }
 
     fn get_quotes_in_range_filled(
@@ -1578,6 +1808,22 @@ where
     ) -> Result<Vec<Quote>> {
         // First try to find an existing asset by ID
         if let Ok(asset) = self.asset_repo.get_by_id(asset_id) {
+            // Manual-mode assets have no provider symbol: asking a provider for them
+            // composes an instrument key that no provider knows and fails. Their prices
+            // only ever live in the quote store.
+            if asset.quote_mode == QuoteMode::Manual {
+                let mut quotes = self.quote_store.range(
+                    &AssetId::new(asset_id),
+                    Day::new(start),
+                    Day::new(end),
+                    None,
+                )?;
+                for quote in &mut quotes {
+                    reconcile_quote_currency(quote, &asset);
+                }
+                return Ok(quotes);
+            }
+
             let start_dt = Utc.from_utc_datetime(&start.and_hms_opt(0, 0, 0).unwrap());
             let end_dt = Utc.from_utc_datetime(&end.and_hms_opt(23, 59, 59).unwrap());
             return self
@@ -2332,7 +2578,8 @@ pub(crate) fn append_historical_seed_quotes<Q: QuoteStore>(
         .collect();
 
     // For symbols without a pre-start seed in the lookback window, fetch the
-    // latest quote before start. Preserves manual quote carry-forward when stale.
+    // latest quote before start regardless of source. This preserves general
+    // historical carry-forward, including stale manual quotes.
     for symbol in symbols {
         if symbols_with_seed_quotes.contains(symbol) {
             continue;
@@ -2460,6 +2707,7 @@ mod tests {
     use async_trait::async_trait;
     use rust_decimal_macros::dec;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -2884,6 +3132,132 @@ mod tests {
         }
     }
 
+    /// Quote store that serves stored rows for a date range and counts the range
+    /// queries, so a test can assert whether the stored-quote path was taken.
+    #[derive(Default)]
+    struct RangeQuoteStore {
+        quotes: Vec<Quote>,
+        range_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl QuoteStore for RangeQuoteStore {
+        async fn save_quote(&self, _quote: &Quote) -> Result<Quote> {
+            unimplemented!("unused in this test")
+        }
+
+        async fn delete_quote(&self, _quote_id: &str) -> Result<()> {
+            unimplemented!("unused in this test")
+        }
+
+        async fn upsert_quotes(&self, _quotes: &[Quote]) -> Result<usize> {
+            unimplemented!("unused in this test")
+        }
+
+        async fn delete_quotes_for_asset(&self, _asset_id: &AssetId) -> Result<usize> {
+            unimplemented!("unused in this test")
+        }
+
+        async fn delete_provider_quotes_for_asset(&self, _asset_id: &AssetId) -> Result<usize> {
+            unimplemented!("unused in this test")
+        }
+
+        fn latest(
+            &self,
+            _asset_id: &AssetId,
+            _source: Option<&QuoteSource>,
+        ) -> Result<Option<Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn range(
+            &self,
+            asset_id: &AssetId,
+            start: Day,
+            end: Day,
+            _source: Option<&QuoteSource>,
+        ) -> Result<Vec<Quote>> {
+            self.range_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self
+                .quotes
+                .iter()
+                .filter(|quote| {
+                    quote.asset_id == asset_id.as_str()
+                        && quote.timestamp.date_naive() >= start.date()
+                        && quote.timestamp.date_naive() <= end.date()
+                })
+                .cloned()
+                .collect())
+        }
+
+        fn latest_batch(
+            &self,
+            _asset_ids: &[AssetId],
+            _source: Option<&QuoteSource>,
+        ) -> Result<HashMap<AssetId, Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn latest_with_previous(
+            &self,
+            _asset_ids: &[AssetId],
+        ) -> Result<HashMap<AssetId, LatestQuotePair>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_quote_bounds_for_assets(
+            &self,
+            _asset_ids: &[String],
+            _source: &str,
+        ) -> Result<HashMap<String, (NaiveDate, NaiveDate)>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_latest_quote(&self, _symbol: &str) -> Result<Quote> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_latest_quotes(&self, _symbols: &[String]) -> Result<HashMap<String, Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_latest_quotes_as_of(
+            &self,
+            _symbols: &[String],
+            _as_of: chrono::NaiveDate,
+        ) -> Result<HashMap<String, Quote>> {
+            Ok(HashMap::new())
+        }
+
+        fn get_latest_quotes_pair(
+            &self,
+            _symbols: &[String],
+        ) -> Result<HashMap<String, LatestQuotePair>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_historical_quotes(&self, _symbol: &str) -> Result<Vec<Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_all_historical_quotes(&self) -> Result<Vec<Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn get_quotes_in_range(
+            &self,
+            _symbol: &str,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Quote>> {
+            unimplemented!("unused in this test")
+        }
+
+        fn find_duplicate_quotes(&self, _symbol: &str, _date: NaiveDate) -> Result<Vec<Quote>> {
+            unimplemented!("unused in this test")
+        }
+    }
+
     struct MockSyncStateStore {
         provider_sync_stats: Vec<ProviderSyncStats>,
         with_errors: Vec<QuoteSyncState>,
@@ -3087,6 +3461,7 @@ mod tests {
         assets: HashMap<String, Asset>,
         reactivated: Arc<Mutex<Vec<String>>>,
         deactivated: Arc<Mutex<Vec<String>>>,
+        list_by_asset_ids_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -3123,6 +3498,7 @@ mod tests {
         }
 
         fn list_by_asset_ids(&self, asset_ids: &[String]) -> Result<Vec<Asset>> {
+            self.list_by_asset_ids_calls.fetch_add(1, Ordering::Relaxed);
             Ok(asset_ids
                 .iter()
                 .filter_map(|asset_id| self.assets.get(asset_id).cloned())
@@ -3561,6 +3937,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sparse_market_facts_load_assets_once_for_all_requested_dates() -> Result<()> {
+        let asset_id = "asset_1".to_string();
+        let list_by_asset_ids_calls = Arc::new(AtomicUsize::new(0));
+        let asset = Asset {
+            id: asset_id.clone(),
+            kind: AssetKind::Investment,
+            quote_mode: QuoteMode::Market,
+            quote_ccy: "USD".to_string(),
+            instrument_type: Some(InstrumentType::Option),
+            ..Default::default()
+        };
+        let asset_repo = PositionStatusAssetRepository {
+            assets: HashMap::from([(asset_id.clone(), asset)]),
+            reactivated: Arc::new(Mutex::new(Vec::new())),
+            deactivated: Arc::new(Mutex::new(Vec::new())),
+            list_by_asset_ids_calls: Arc::clone(&list_by_asset_ids_calls),
+        };
+        let service = QuoteService::new(
+            Arc::new(NoopQuoteStore),
+            Arc::new(MockSyncStateStore {
+                provider_sync_stats: vec![],
+                with_errors: vec![],
+                states: Arc::new(Mutex::new(HashMap::new())),
+            }),
+            Arc::new(MockProviderSettingsStore { providers: vec![] }),
+            Arc::new(asset_repo),
+            Arc::new(NoopActivityRepository),
+            Arc::new(MockSecretStore),
+        )
+        .await?;
+
+        let facts = service.get_sparse_asset_market_facts(&[
+            (
+                asset_id.clone(),
+                NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+            ),
+            (
+                asset_id.clone(),
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            ),
+        ])?;
+
+        assert_eq!(list_by_asset_ids_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(facts.assets_by_id.len(), 1);
+        assert!(facts.assets_by_id.contains_key(&asset_id));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_update_position_status_creates_sync_state_for_open_inactive_asset() {
         let asset_id = "asset_1".to_string();
         let asset = Asset {
@@ -3576,6 +4001,7 @@ mod tests {
             assets: HashMap::from([(asset_id.clone(), asset)]),
             reactivated: Arc::clone(&reactivated),
             deactivated: Arc::clone(&deactivated),
+            list_by_asset_ids_calls: Arc::new(AtomicUsize::new(0)),
         };
         let states = Arc::new(Mutex::new(HashMap::new()));
         let sync_state_store = Arc::new(MockSyncStateStore {
@@ -3627,6 +4053,7 @@ mod tests {
             assets: HashMap::from([(asset_id.clone(), asset)]),
             reactivated: Arc::clone(&reactivated),
             deactivated: Arc::new(Mutex::new(Vec::new())),
+            list_by_asset_ids_calls: Arc::new(AtomicUsize::new(0)),
         };
         let states = Arc::new(Mutex::new(HashMap::new()));
         let service = QuoteService::new(
@@ -3688,6 +4115,7 @@ mod tests {
             assets: HashMap::from([(asset_id.clone(), asset)]),
             reactivated: Arc::new(Mutex::new(Vec::new())),
             deactivated: Arc::new(Mutex::new(Vec::new())),
+            list_by_asset_ids_calls: Arc::new(AtomicUsize::new(0)),
         };
         let service = QuoteService::new(
             Arc::new(NoopQuoteStore),
@@ -3752,6 +4180,7 @@ mod tests {
             assets: HashMap::from([(asset_id.clone(), asset)]),
             reactivated: Arc::new(Mutex::new(Vec::new())),
             deactivated: Arc::clone(&deactivated),
+            list_by_asset_ids_calls: Arc::new(AtomicUsize::new(0)),
         };
         let service = QuoteService::new(
             Arc::new(NoopQuoteStore),
@@ -3829,6 +4258,151 @@ mod tests {
             Some("quote_1")
         );
         assert!(snapshot.no_quote_reason.is_none());
+        Ok(())
+    }
+
+    fn stored_quote(asset_id: &str, day: NaiveDate, close: rust_decimal::Decimal) -> Quote {
+        Quote {
+            id: format!("{}_{}", asset_id, day),
+            asset_id: asset_id.to_string(),
+            timestamp: Utc.from_utc_datetime(&day.and_hms_opt(16, 0, 0).unwrap()),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            adjclose: close,
+            volume: dec!(0),
+            currency: "EUR".to_string(),
+            data_source: DATA_SOURCE_MANUAL.to_string(),
+            created_at: Utc::now(),
+            notes: None,
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn quote_service_for_asset(
+        asset: Asset,
+        quote_store: Arc<RangeQuoteStore>,
+    ) -> Result<
+        QuoteService<
+            RangeQuoteStore,
+            MockSyncStateStore,
+            MockProviderSettingsStore,
+            PositionStatusAssetRepository,
+            NoopActivityRepository,
+        >,
+    > {
+        let asset_repo = PositionStatusAssetRepository {
+            assets: HashMap::from([(asset.id.clone(), asset)]),
+            reactivated: Arc::new(Mutex::new(Vec::new())),
+            deactivated: Arc::new(Mutex::new(Vec::new())),
+            list_by_asset_ids_calls: Arc::new(AtomicUsize::new(0)),
+        };
+
+        QuoteService::new(
+            quote_store,
+            Arc::new(MockSyncStateStore {
+                provider_sync_stats: vec![],
+                with_errors: vec![],
+                states: Arc::new(Mutex::new(HashMap::new())),
+            }),
+            Arc::new(MockProviderSettingsStore { providers: vec![] }),
+            Arc::new(asset_repo),
+            Arc::new(NoopActivityRepository),
+            Arc::new(MockSecretStore),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn fetch_quotes_for_symbol_serves_manual_asset_from_stored_quotes() -> Result<()> {
+        let asset_id = "SEC:NBIM:XETR";
+        let asset = Asset {
+            id: asset_id.to_string(),
+            kind: AssetKind::Investment,
+            instrument_type: Some(InstrumentType::Equity),
+            quote_mode: QuoteMode::Manual,
+            quote_ccy: "EUR".to_string(),
+            ..Default::default()
+        };
+        let range_calls = Arc::new(AtomicUsize::new(0));
+        let quote_store = Arc::new(RangeQuoteStore {
+            quotes: vec![
+                stored_quote(
+                    asset_id,
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    dec!(101.5),
+                ),
+                stored_quote(
+                    asset_id,
+                    NaiveDate::from_ymd_opt(2025, 12, 15).unwrap(),
+                    dec!(90),
+                ),
+            ],
+            range_calls: Arc::clone(&range_calls),
+        });
+        let service = quote_service_for_asset(asset, quote_store).await?;
+
+        let quotes = QuoteServiceTrait::fetch_quotes_for_symbol(
+            &service,
+            asset_id,
+            "USD",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .await?;
+
+        assert_eq!(
+            range_calls.load(Ordering::Relaxed),
+            1,
+            "manual assets have no provider symbol and must be served from stored quotes"
+        );
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].close, dec!(101.5));
+        assert_eq!(quotes[0].currency, "EUR");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_quotes_for_symbol_keeps_provider_path_for_market_asset() -> Result<()> {
+        let asset_id = "SEC:AAPL:XNAS";
+        let asset = Asset {
+            id: asset_id.to_string(),
+            kind: AssetKind::Investment,
+            instrument_type: Some(InstrumentType::Equity),
+            quote_mode: QuoteMode::Market,
+            quote_ccy: "USD".to_string(),
+            ..Default::default()
+        };
+        let range_calls = Arc::new(AtomicUsize::new(0));
+        let quote_store = Arc::new(RangeQuoteStore {
+            quotes: vec![stored_quote(
+                asset_id,
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                dec!(101.5),
+            )],
+            range_calls: Arc::clone(&range_calls),
+        });
+        let service = quote_service_for_asset(asset, quote_store).await?;
+
+        let result = QuoteServiceTrait::fetch_quotes_for_symbol(
+            &service,
+            asset_id,
+            "USD",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            range_calls.load(Ordering::Relaxed),
+            0,
+            "market assets must keep using the provider, not stored quotes"
+        );
+        assert!(
+            result.is_err(),
+            "no provider is enabled, so the provider path must surface its own error"
+        );
         Ok(())
     }
 

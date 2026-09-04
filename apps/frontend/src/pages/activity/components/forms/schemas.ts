@@ -126,6 +126,7 @@ export const tradeActivitySchema = baseActivitySchema.extend({
       invalid_type_error: "Unit price must be a number.",
     })
     .positive(),
+  amount: z.coerce.number().min(0).optional(),
   fee: z.coerce
     .number({
       required_error: "Please enter a valid fee.",
@@ -162,7 +163,7 @@ export const cashActivitySchema = baseActivitySchema.extend({
       required_error: "Please enter a valid amount.",
       invalid_type_error: "Amount must be a positive number.",
     })
-    .positive(),
+    .min(0),
   fee: z.coerce
     .number({
       invalid_type_error: "Fee must be a positive number.",
@@ -176,14 +177,17 @@ export const cashActivitySchema = baseActivitySchema.extend({
 export const incomeActivitySchema = baseActivitySchema.extend({
   activityType: z.enum([ActivityType.DIVIDEND, ActivityType.INTEREST]),
   assetId: z.string().min(1, { message: "Please select a security" }).optional(),
+  // No .positive() on unitPrice: cash records persist quantity/unitPrice as 0,
+  // so a top-level check would reject edits over these hidden fields. Positivity
+  // for asset-backed subtypes is enforced by validateAssetBackedIncomeFields.
   quantity: z.coerce.number().default(0),
-  unitPrice: z.coerce.number().positive().optional(),
+  unitPrice: z.coerce.number().optional(),
   amount: z.coerce
     .number({
       required_error: "Please enter a valid amount.",
       invalid_type_error: "Amount must be a positive number.",
     })
-    .positive(),
+    .min(0),
   fee: z.coerce
     .number({
       invalid_type_error: "Fee must be a positive number.",
@@ -221,7 +225,7 @@ export const creditActivitySchema = baseActivitySchema.extend({
       required_error: "Please enter a valid amount.",
       invalid_type_error: "Amount must be a positive number.",
     })
-    .positive(),
+    .min(0),
   fee: z.coerce
     .number({
       invalid_type_error: "Fee must be a positive number.",
@@ -234,7 +238,7 @@ export const creditActivitySchema = baseActivitySchema.extend({
 
 export const adjustmentActivitySchema = baseActivitySchema.extend({
   activityType: z.enum([ActivityType.ADJUSTMENT]),
-  assetId: z.string().min(1, { message: "Please select a security" }),
+  assetId: z.string().optional(),
   quantity: z.coerce.number().nonnegative().optional().nullable(),
   unitPrice: z.coerce.number().nonnegative().optional().nullable(),
   amount: z.coerce.number().optional().nullable(),
@@ -262,6 +266,19 @@ export const newActivitySchema = z
     z.object({
       showCurrencySelect: z.boolean().optional(),
     }),
-  );
+  )
+  .superRefine((activity, ctx) => {
+    if (activity.activityType !== ActivityType.ADJUSTMENT || activity.assetId?.trim()) return;
+
+    const amount = Number(activity.amount);
+    if (Number.isFinite(amount) && amount > 0) return;
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: activity.amount == null ? ["assetId"] : ["amount"],
+      message:
+        activity.amount == null ? "Please select a security" : "Amount must be greater than zero",
+    });
+  });
 
 export type NewActivityFormValues = z.infer<typeof newActivitySchema>;

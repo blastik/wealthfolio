@@ -56,6 +56,8 @@ export type CellOpts =
       max?: number;
       step?: number;
       valueType?: "number" | "string";
+      /** Custom renderer for the value while the cell is not being edited. */
+      valueRenderer?: (value: number | string | null, rowData: unknown) => React.ReactNode;
     }
   | {
       variant: "select";
@@ -130,6 +132,10 @@ declare module "@tanstack/react-table" {
   interface ColumnMeta<TData extends RowData, TValue> {
     label?: string;
     helpText?: string;
+    /** Primitive dependency used to invalidate a memoized cell when display configuration changes. */
+    renderKey?: string | number | boolean;
+    /** Row-derived primitive used when a renderer depends on fields outside its accessor value. */
+    getRenderKey?: (rowData: TData) => string | number | boolean | null | undefined;
     cell?: CellOpts;
   }
 

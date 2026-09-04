@@ -1,6 +1,6 @@
 import { getAccounts, logger } from "@/adapters";
 import { usePlatform } from "@/hooks/use-platform";
-import { isCashSymbol, needsImportAssetResolution } from "@/lib/activity-utils";
+import { shouldResolveImportAsset } from "@/lib/activity-utils";
 import { canImportCSV } from "@/lib/activity-restrictions";
 import { QueryKeys } from "@/lib/query-keys";
 import type { Account } from "@/lib/types";
@@ -247,10 +247,7 @@ function useStepValidation(
                   csvActivityType,
                   mapping.activityMappings || {},
                 );
-                if (
-                  mappedType &&
-                  (!needsImportAssetResolution(mappedType, csvSubtype) || isCashSymbol(symbol))
-                ) {
+                if (mappedType && !shouldResolveImportAsset(mappedType, csvSubtype, symbol)) {
                   return;
                 }
               }
@@ -394,6 +391,8 @@ function ImportWizardContent() {
   const isTransactionImport = isTransactionImportProfile(importProfile);
 
   const isCsvImportAllowed = canImportCSV(selectedAccount);
+  const isHoldingsValidationLoading =
+    isHoldingsMode && state.step === "review" && state.isValidating;
 
   const canProceed = useStepValidation(isHoldingsMode, importProfile, accounts);
 
@@ -721,7 +720,12 @@ function ImportWizardContent() {
                     canGoBack={canGoBack}
                     canGoNext={canGoNext}
                     nextLabel={getNextLabel()}
-                    isNextLoading={isNextLoading}
+                    nextLoadingLabel={
+                      isHoldingsValidationLoading
+                        ? t("activity:import.holdings.validating")
+                        : undefined
+                    }
+                    isNextLoading={isNextLoading || isHoldingsValidationLoading}
                   />
                 </div>
               )}

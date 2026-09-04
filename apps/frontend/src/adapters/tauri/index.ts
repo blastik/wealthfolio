@@ -17,6 +17,7 @@ export type { EventCallback, UnlistenFn, RunEnv, Logger } from "../types";
 export { RunEnvs } from "../types";
 export type {
   AddonFile,
+  AddonAsset,
   AddonInstallResult,
   AddonManifest,
   AddonNetworkRequest,
@@ -110,11 +111,17 @@ export * from "../shared/taxonomies";
 // Alternative Assets Commands
 export * from "../shared/alternative-assets";
 
+// Asset Logo Commands
+export * from "../shared/asset-logos";
+
 // Contribution Limits Commands
 export * from "../shared/contribution-limits";
 
 // Exchange Rates Commands
 export * from "../shared/exchange-rates";
+
+// Spending Categorization Commands
+export * from "../shared/spending";
 
 // Secrets Commands
 export * from "../shared/secrets";
@@ -172,6 +179,7 @@ export {
   toggleAddon,
   uninstallAddon,
   loadAddonForRuntime,
+  loadAddonAsset,
   getEnabledAddonsOnStartup,
   getInstalledAddons,
   loadAddon,
@@ -183,10 +191,14 @@ export {
   updateAddon,
   downloadAddonForReview,
   installFromStaging,
+  updateAddonNetworkApprovals,
   clearAddonStaging,
   getAddonRatings,
   submitAddonRating,
   fetchAddonStoreListings,
+  getAddonStorageItem,
+  setAddonStorageItem,
+  deleteAddonStorageItem,
 } from "./addons";
 
 // Agent Access Commands (embedded MCP server; PATs are web-only stubs)

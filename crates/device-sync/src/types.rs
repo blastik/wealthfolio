@@ -604,6 +604,8 @@ pub fn sync_entity_from_remote(entity: &str) -> Option<SyncEntity> {
         "budget_group_assignment" => Some(SyncEntity::BudgetGroupAssignment),
         "budget_target" => Some(SyncEntity::BudgetTarget),
         "budget_rollover_setting" => Some(SyncEntity::BudgetRolloverSetting),
+        "addon_storage" => Some(SyncEntity::AddonStorage),
+        "asset_logo" => Some(SyncEntity::AssetLogo),
         _ => None,
     }
 }
@@ -778,6 +780,14 @@ mod tests {
         assert_eq!(
             sync_entity_from_remote("broker_activity_user_patch"),
             Some(SyncEntity::BrokerActivityUserPatch)
+        );
+        assert_eq!(
+            sync_entity_from_remote("addon_storage"),
+            Some(SyncEntity::AddonStorage)
+        );
+        assert_eq!(
+            sync_entity_from_remote("asset_logo"),
+            Some(SyncEntity::AssetLogo)
         );
     }
 }

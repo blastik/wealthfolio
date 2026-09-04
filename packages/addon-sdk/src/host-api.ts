@@ -21,6 +21,8 @@ import type {
   ContributionLimit,
   DepositsCalculation,
   ExchangeRate,
+  ExchangeRateDateQuery,
+  ExchangeRateDateResult,
   Goal,
   GoalAllocation,
   Holding,
@@ -36,6 +38,10 @@ import type {
   SnapshotImportResult,
   SnapshotInfo,
   SnapshotInput,
+  CategorizationRule,
+  CategorizationRuleInput,
+  SpendCategory,
+  SpendCategoryKind,
   SymbolSearchResult,
   UpdateAssetProfile,
 } from './data-types';
@@ -379,6 +385,73 @@ export interface ExchangeRatesAPI {
    * @returns Promise resolving to created exchange rate
    */
   add(newRate: Omit<ExchangeRate, 'id'>): Promise<ExchangeRate>;
+
+  /**
+   * Look up historical exchange rates for a batch of (currency pair, date) requests.
+   * Dates must use YYYY-MM-DD. Resolution follows Wealthfolio's core FX rules,
+   * including currency normalization, inverse or triangulated paths, nearest
+   * available quotes, and the existing latest-rate fallback.
+   * Never rejects for an individual unresolvable pair — each result carries
+   * either a rate or an error, so one bad pair doesn't fail the whole batch.
+   * @param pairs Currency pairs and dates to resolve
+   * @returns Promise resolving to one result per requested pair, in the same order
+   */
+  getRatesForDates(pairs: ExchangeRateDateQuery[]): Promise<ExchangeRateDateResult[]>;
+}
+
+/**
+ * Spend categorization APIs
+ * Lets addons classify activities (e.g. WITHDRAWALs) into the user's
+ * existing spend-category taxonomy via Wealthfolio's categorization-rules
+ * engine, rather than a one-off per-activity tag.
+ */
+export interface SpendingAPI {
+  /**
+   * Whether the user has Spending enabled. Rules and categories still work
+   * when it's off, but re-running rules is a no-op until the user opts an
+   * account in — check this to explain a `rerunRules()` result of 0.
+   * @returns Promise resolving to whether Spending is enabled
+   */
+  isEnabled(): Promise<boolean>;
+
+  /**
+   * List selectable spend categories, flattened with a display path.
+   * @param kind Restrict to one taxonomy. Omit to get all three (expense, income, saving).
+   * @returns Promise resolving to array of spend categories
+   */
+  getCategories(kind?: SpendCategoryKind): Promise<SpendCategory[]>;
+
+  /**
+   * List this addon's own categorization rules (those created via `saveRule`).
+   * @returns Promise resolving to array of categorization rules
+   */
+  getRules(): Promise<CategorizationRule[]>;
+
+  /**
+   * Create or update a categorization rule identified by `rule.ruleKey`.
+   * Calling this again with the same ruleKey updates the existing rule
+   * in place instead of creating a duplicate.
+   * @param rule Rule definition
+   * @returns Promise resolving to the created or updated rule
+   */
+  saveRule(rule: CategorizationRuleInput): Promise<CategorizationRule>;
+
+  /**
+   * Delete the rule previously created with this ruleKey. No-op if absent.
+   * @param ruleKey The stable key passed to a prior saveRule call
+   * @returns Promise that resolves once the rule is deleted (or confirmed absent)
+   */
+  deleteRule(ruleKey: string): Promise<void>;
+
+  /**
+   * Re-run all categorization rules. Pass false to overwrite existing
+   * rule/AI/import-assigned categories too — the default only fills in
+   * currently uncategorized activities, preserving any existing manual or
+   * AI-assigned categories.
+   * @param onlyUncategorized Defaults to true
+   * @returns Promise resolving to the number of activities touched
+   */
+  rerunRules(onlyUncategorized?: boolean): Promise<number>;
 }
 
 /**
@@ -545,6 +618,44 @@ export interface SecretsAPI {
 }
 
 /**
+ * Storage APIs
+ * Durable per-addon key-value storage (SQLite-backed on the host).
+ * Values are opaque strings owned by the addon; storage survives addon
+ * updates and is removed on uninstall. Each addon can only access its own
+ * storage. Use this instead of `localStorage`, which is unavailable in the
+ * sandboxed (opaque-origin) iframe.
+ *
+ * Keys are ≤ 128 characters from the charset `[A-Za-z0-9_.:-]`. Values are
+ * capped at roughly 250 KB each (the storage replicates across a user's paired
+ * devices, which bounds per-item size); `set` rejects an oversized value. Use
+ * many small keys rather than one large blob, and keep device-local caches out
+ * of storage.
+ */
+export interface StorageAPI {
+  /**
+   * Retrieve a stored value for this addon
+   * @param key Storage key identifier
+   * @returns Promise resolving to the stored value or null if not found
+   */
+  get(key: string): Promise<string | null>;
+
+  /**
+   * Store a value for this addon
+   * @param key Storage key identifier
+   * @param value Value to store
+   * @returns Promise that resolves when the value is stored
+   */
+  set(key: string, value: string): Promise<void>;
+
+  /**
+   * Delete a stored value for this addon
+   * @param key Storage key identifier
+   * @returns Promise that resolves when the value is deleted
+   */
+  delete(key: string): Promise<void>;
+}
+
+/**
  * Logger APIs
  * Provides logging functionality with automatic addon prefix
  * All log messages will be prefixed with the addon ID for easy identification
@@ -704,8 +815,10 @@ export interface ToastAPI {
  */
 export interface QueryAPI {
   /**
-   * Get the shared QueryClient instance from the main application
-   * @returns The shared QueryClient instance
+   * Get the QueryClient scoped to this addon sandbox. Its invalidate/refetch
+   * operations are mirrored to the host, but its cache is not shared with the
+   * main application or other addons.
+   * @returns The addon-scoped QueryClient instance
    */
   getClient(): unknown; // QueryClient from @tanstack/react-query
 
@@ -737,7 +850,11 @@ export interface NetworkResponse {
 }
 
 export interface NetworkAuth {
-  type: 'bearer';
+  /**
+   * Authorization scheme. For `basic`, the stored secret must be the
+   * base64-encoded `user:pass` value.
+   */
+  type: 'bearer' | 'basic';
   secretKey: string;
 }
 
@@ -801,6 +918,9 @@ export interface HostAPI {
   /** Exchange rates operations */
   exchangeRates: ExchangeRatesAPI;
 
+  /** Spend categorization operations */
+  spending: SpendingAPI;
+
   /** Contribution limits operations */
   contributionLimits: ContributionLimitsAPI;
 
@@ -818,6 +938,9 @@ export interface HostAPI {
 
   /** Secrets management */
   secrets: SecretsAPI;
+
+  /** Durable per-addon key-value storage */
+  storage: StorageAPI;
 
   /** Logger operations */
   logger: LoggerAPI;

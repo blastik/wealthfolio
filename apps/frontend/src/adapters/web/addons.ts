@@ -1,9 +1,10 @@
 // Web adapter - Addon Commands
 
-import { invoke } from "./core";
+import { API_PREFIX, invoke } from "./core";
 import type { AddonManifest, ExtractedAddon, InstalledAddon } from "../types";
 import type { AddonUpdateCheckResult } from "@wealthfolio/addon-sdk";
 import type { AddonStoreListing } from "@/lib/types";
+import { notifyUnauthorized } from "@/lib/auth-token";
 
 // ============================================================================
 // Core Addon Commands
@@ -52,6 +53,33 @@ export const uninstallAddon = async (addonId: string): Promise<void> => {
 
 export const loadAddonForRuntime = async (addonId: string): Promise<ExtractedAddon> => {
   return await invoke<ExtractedAddon>("load_addon_for_runtime", { addonId });
+};
+
+export const loadAddonAsset = async (
+  addonId: string,
+  assetId: string,
+  _mimeType?: string,
+): Promise<Blob> => {
+  const response = await fetch(
+    `${API_PREFIX}/addons/runtime/${encodeURIComponent(addonId)}/assets/${encodeURIComponent(assetId)}`,
+    { credentials: "same-origin", signal: AbortSignal.timeout(30_000) },
+  );
+  if (response.status === 401) {
+    notifyUnauthorized();
+  }
+  if (!response.ok) {
+    let message = response.statusText || "Failed to load addon asset";
+    try {
+      const body = (await response.json()) as { message?: unknown };
+      if (typeof body.message === "string") {
+        message = body.message;
+      }
+    } catch {
+      // Keep the HTTP status text for non-JSON errors.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
 };
 
 export const getEnabledAddonsOnStartup = async (): Promise<ExtractedAddon[]> => {
@@ -118,6 +146,16 @@ export const installFromStaging = async (
   });
 };
 
+export const updateAddonNetworkApprovals = async (
+  addonId: string,
+  approvedNetworkHosts: string[],
+): Promise<AddonManifest> => {
+  return invoke<AddonManifest>("update_addon_network_approvals", {
+    addonId,
+    approvedNetworkHosts,
+  });
+};
+
 export const clearAddonStaging = async (addonId?: string): Promise<void> => {
   return invoke<void>("clear_addon_staging", { addonId });
 };
@@ -143,4 +181,24 @@ export const submitAddonRating = async (
 
 export const fetchAddonStoreListings = async (): Promise<AddonStoreListing[]> => {
   return invoke<AddonStoreListing[]>("fetch_addon_store_listings");
+};
+
+// ============================================================================
+// Addon Key-Value Storage
+// ============================================================================
+
+export const getAddonStorageItem = async (addonId: string, key: string): Promise<string | null> => {
+  return invoke<string | null>("get_addon_storage_item", { addonId, key });
+};
+
+export const setAddonStorageItem = async (
+  addonId: string,
+  key: string,
+  value: string,
+): Promise<void> => {
+  return invoke<void>("set_addon_storage_item", { addonId, key, value });
+};
+
+export const deleteAddonStorageItem = async (addonId: string, key: string): Promise<void> => {
+  return invoke<void>("delete_addon_storage_item", { addonId, key });
 };

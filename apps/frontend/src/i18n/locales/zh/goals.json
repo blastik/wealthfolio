@@ -94,7 +94,7 @@
       "nominal": "名义值",
       "explained_aria": "现值与名义值说明",
       "todays_value_tip": "将未来的金额换算回今天的购买力，使金额与您当前的预算具有可比性。",
-      "nominal_tip": "显示经通胀调整后的未来金额。这是您在未来那一年将看到的金额。"
+      "nominal_tip": "显示计入通胀后的未来名义金额。这是您在未来那一年将看到的金额。"
     },
     "age_label": "{{age}} 岁",
     "failed_to_load_portfolio": "加载投资组合数据失败：{{message}}",
@@ -228,7 +228,7 @@
     "more_info_about": "关于 {{label}} 的更多信息",
     "edit_section": "编辑 {{title}}",
     "warnings": {
-      "high_inflation": "通胀假设偏高。在此利率下，长期支出需求会变得更加敏感。",
+      "high_inflation": "通胀假设偏高。在该通胀率下，长期支出需求会变得更加敏感。",
       "high_fee": "费用假设偏高。费用拖累会显著降低长期收益。",
       "high_volatility": "波动率假设偏高。结果区间可能变得非常宽。",
       "high_contribution_growth": "供款增长假设偏高。这意味着持续大幅增加储蓄。"
@@ -251,6 +251,8 @@
       "retirement_age": "退休年龄",
       "desired_retirement_age_hint": "您希望实现财务独立的年龄。",
       "retirement_age_hint": "您希望退休的年龄。",
+      "horizon_age_fire": "计划终止年龄",
+      "horizon_age_traditional": "预期寿命",
       "horizon_hint": "计划应覆盖至的年龄。",
       "monthly_contribution": "每月供款",
       "monthly_contribution_hint": "退休前您每月增加的金额。",
@@ -316,6 +318,13 @@
       "current_fund_balance": "当前基金余额",
       "monthly_fund_contribution": "每月基金供款",
       "fund_return_before_payout": "支付前基金收益率",
+      "fund_payout_rate": "支付比率",
+      "fund_payout_mode": "支付方式",
+      "fund_payout_mode_help": "年金终身支付；提取则动用基金，直到耗尽。",
+      "annuity": "年金",
+      "drawdown": "提取",
+      "fund_return_during_payout": "支付期间的基金收益率",
+      "drawdown_note": "提取按起始年龄时余额的 {{pct}}%/年支取，此后按下方的增长设置继续，直到基金耗尽。",
       "monthly_payout_after_tax": "税后每月支付额",
       "payout_estimate_note": "除非您输入每月支付额，否则估算支付额按预计基金余额的 {{pct}}%/年计算。",
       "start_age": "起始年龄",
@@ -707,7 +716,7 @@
     "low_range": "低区间（{{rate}}）",
     "legend_projected": "预计",
     "legend_target": "目标",
-    "legend_range": "区间（±{{pct}}%）"
+    "legend_range": "区间（±{{pct}}）"
   },
   "milestones": {
     "kicker": "检查点",
@@ -750,7 +759,8 @@
       "gap_at_target_age": "目标年龄时的缺口",
       "money_lasts": "资金充足",
       "paths_count": "{{count}} 条路径",
-      "not_run": "未运行"
+      "not_run": "未运行",
+      "paths_count_other": "{{count}} 条路径"
     },
     "results": {
       "base_plan": "基础计划",
@@ -796,7 +806,8 @@
       "outcome": "结果",
       "fi_age": "财务独立年龄",
       "extra_gap": "额外缺口",
-      "money_left": "剩余资金"
+      "money_left": "剩余资金",
+      "eyebrow_with_count_other": "什么可能破坏此计划？ · {{count}} 个情景"
     },
     "montecarlo": {
       "eyebrow": "市场路径",
@@ -829,7 +840,8 @@
       "median_fi_age": "中位数财务独立年龄",
       "market_paths_count": "{{count}} 条市场路径",
       "retire": "退休",
-      "goal": "目标"
+      "goal": "目标",
+      "market_paths_count_other": "{{count}} 条市场路径"
     },
     "moves": {
       "eyebrow": "什么对计划影响最大？",

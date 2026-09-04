@@ -1,4 +1,5 @@
 import { DashboardCard } from "@/components/dashboard-card";
+import { useNumberFormatting } from "@wealthfolio/ui";
 import {
   Collapsible,
   CollapsibleContent,
@@ -27,6 +28,8 @@ const ROW_GRID =
   "grid grid-cols-[minmax(0,1fr)_4.5rem_5.75rem] md:grid-cols-[minmax(0,1fr)_3rem_7rem_9.5rem] items-center gap-x-3 md:gap-x-4";
 
 function ChangeCell({ change, currency }: { change: Change; currency: string }) {
+  const formatting = useNumberFormatting();
+  const { t } = useTranslation();
   const isZero = Math.abs(change.amount) < 0.005;
   const color = isZero
     ? "text-muted-foreground/60"
@@ -43,7 +46,7 @@ function ChangeCell({ change, currency }: { change: Change; currency: string }) 
         <CompactAmount value={Math.abs(change.amount)} currency={currency} />
       </span>
       <span className="text-muted-foreground/60 hidden w-12 shrink-0 text-right text-sm tabular-nums md:block">
-        {formatChangePercent(change.percent)}
+        {formatChangePercent(change, t("insights:networth.breakdown_table.new"), formatting)}
       </span>
     </div>
   );

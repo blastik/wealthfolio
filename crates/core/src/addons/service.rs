@@ -1,7 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -9,6 +10,7 @@ use serde_json::json;
 use super::addon_traits::AddonServiceTrait;
 use super::models::*;
 use super::network::{perform_addon_network_request, AddonNetworkRequest, AddonNetworkResponse};
+use super::storage_repository::AddonStorageRepositoryTrait;
 
 // Constants
 pub const ADDON_STORE_API_BASE_URL: &str = "https://wealthfolio.app/api/addons";
@@ -16,6 +18,25 @@ const MAX_ADDON_ARCHIVE_ENTRIES: usize = 256;
 const MAX_ADDON_ARCHIVE_FILE_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_ADDON_ARCHIVE_TOTAL_SIZE: u64 = 25 * 1024 * 1024;
 const MAX_ADDON_ARCHIVE_COMPRESSED_SIZE: usize = 50 * 1024 * 1024;
+const MAX_ADDON_STORAGE_KEY_LEN: usize = 128;
+/// Upper bound on the serialized `{addon_id, key, value}` sync payload — NOT the
+/// raw value length. A storage write emits a device-sync outbox event whose
+/// payload is this JSON, encrypted (+40 B XChaCha20-Poly1305 nonce/tag) and
+/// base64-encoded before it hits the sync server. The server caps the encrypted
+/// base64 payload at 350,000 chars (`payload` in wealthfolio-cloud
+/// `apps/api/src/schemas/sync.ts`), i.e. 350_000 * 3/4 - 40 = 262,460 plaintext
+/// bytes. We bound the serialized payload (which is what actually gets encrypted,
+/// so JSON escaping can't sneak past a raw-byte check) at 250_000 to keep
+/// headroom. An oversized write is rejected at `set()` — otherwise it would
+/// succeed locally and later dead-letter its whole sync push batch on the server.
+/// To raise this: bump the cloud cap FIRST, then this constant, as a pair.
+const MAX_ADDON_STORAGE_SYNC_PAYLOAD_LEN: usize = 250_000;
+
+/// Implicit baseline capabilities that every addon may use without declaring a
+/// permission or obtaining user consent. Mirrors `BASELINE_PERMISSION_CATEGORIES`
+/// in `packages/addon-sdk/src/permissions.ts`. Legacy manifests that still declare
+/// these keep parsing, but they never count as a permission escalation on update.
+const BASELINE_PERMISSION_CATEGORIES: &[&str] = &["ui", "query", "toast", "logger", "storage"];
 
 #[derive(Clone)]
 struct AddonArchiveFile {
@@ -34,7 +55,6 @@ fn create_request_with_headers(
     client: &reqwest::Client,
     method: reqwest::Method,
     url: &str,
-    instance_id: Option<&str>,
 ) -> reqwest::RequestBuilder {
     let mut request = client.request(method, url);
 
@@ -50,11 +70,6 @@ fn create_request_with_headers(
     // Add X-App-Version header only if version is available
     if let Some(version) = app_version {
         request = request.header("X-App-Version", version);
-    }
-
-    // Add instance ID header if provided
-    if let Some(instance_id) = instance_id {
-        request = request.header("X-Instance-Id", instance_id);
     }
 
     request
@@ -294,8 +309,21 @@ pub fn detect_addon_permissions(addon_files: &[AddonFile]) -> Vec<AddonPermissio
         (
             "currency",
             "exchangeRates",
-            vec!["getAll", "update", "add"],
+            vec!["getAll", "update", "add", "getRatesForDates"],
             "Access to exchange rates and currency data",
+        ),
+        (
+            "spending",
+            "spending",
+            vec![
+                "isEnabled",
+                "getCategories",
+                "getRules",
+                "saveRule",
+                "deleteRule",
+                "rerunRules",
+            ],
+            "Access to spend categories and categorization rules",
         ),
         (
             "settings",
@@ -621,14 +649,148 @@ fn archive_file_to_addon_file(file: AddonArchiveFile) -> AddonFile {
     }
 }
 
-fn archive_files_to_text_files(files: &[AddonArchiveFile]) -> Vec<AddonFile> {
+fn normalized_addon_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn is_brokered_addon_asset_path(path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    let lower_path = path.to_ascii_lowercase();
+    (path.starts_with("assets/") || path.starts_with("dist/assets/"))
+        && !lower_path.ends_with(".js")
+        && !lower_path.ends_with(".css")
+        && !lower_path.ends_with(".map")
+        && !lower_path.ends_with("/.gitkeep")
+        && !lower_path.ends_with("/.ds_store")
+}
+
+fn addon_package_root_from_main_path(file_name: &str, main_file: &str) -> Option<String> {
+    let file_name = file_name.replace('\\', "/");
+    let main_file = main_file.replace('\\', "/");
+    let main_file = main_file.trim_start_matches('/');
+    if main_file.is_empty() {
+        return None;
+    }
+    if file_name == main_file {
+        return Some(String::new());
+    }
+
+    file_name
+        .strip_suffix(&format!("/{main_file}"))
+        .map(str::to_string)
+}
+
+fn addon_package_relative_path(path: &str, package_root: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    if package_root.is_empty() {
+        return Some(path);
+    }
+
+    path.strip_prefix(&format!("{package_root}/"))
+        .map(str::to_string)
+}
+
+fn addon_asset_id(path: &str, content: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(path.as_bytes());
+    digest.update([0]);
+    digest.update(content);
+    hex::encode(digest.finalize())
+}
+
+fn addon_asset_mime_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("gif") => "image/gif",
+        Some("ico") => "image/x-icon",
+        Some("jpeg" | "jpg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("css") => "text/css",
+        Some("csv") => "text/csv",
+        Some("html") => "text/html",
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        Some("txt") => "text/plain",
+        Some("otf") => "font/otf",
+        Some("ttf") => "font/ttf",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("pdf") => "application/pdf",
+        Some("wasm") => "application/wasm",
+        Some("xml") => "application/xml",
+        _ => "application/octet-stream",
+    }
+}
+
+fn addon_asset_descriptor(path: &str, content: &[u8]) -> AddonAsset {
+    AddonAsset {
+        id: addon_asset_id(path, content),
+        path: path.to_string(),
+        mime_type: addon_asset_mime_type(Path::new(path)).to_string(),
+        size: content.len() as u64,
+    }
+}
+
+fn archive_addon_package_root(
+    files: &[AddonArchiveFile],
+    main_file: &str,
+) -> Result<String, String> {
+    let roots = files
+        .iter()
+        .filter(|file| file.is_main)
+        .filter_map(|file| addon_package_root_from_main_path(&file.name, main_file))
+        .collect::<Vec<_>>();
+    match roots.as_slice() {
+        [root] => Ok(root.clone()),
+        [] => Err("Main addon file not found".to_string()),
+        _ => Err("Multiple addon files match the declared main file".to_string()),
+    }
+}
+
+fn archive_addon_assets(files: &[AddonArchiveFile], package_root: &str) -> Vec<AddonAsset> {
     files
         .iter()
         .filter_map(|file| {
+            let path = addon_package_relative_path(&file.name, package_root)?;
+            is_brokered_addon_asset_path(&path)
+                .then(|| addon_asset_descriptor(&path, &file.content))
+        })
+        .collect()
+}
+
+fn archive_files_to_text_files(files: &[AddonArchiveFile], package_root: &str) -> Vec<AddonFile> {
+    files
+        .iter()
+        .filter_map(|file| {
+            let path = addon_package_relative_path(&file.name, package_root)?;
+            if is_brokered_addon_asset_path(&path) {
+                return None;
+            }
             String::from_utf8(file.content.clone())
                 .ok()
                 .map(|content| AddonFile {
-                    name: file.name.clone(),
+                    name: path,
                     content,
                     is_main: file.is_main,
                 })
@@ -748,9 +910,9 @@ fn extract_addon_zip_archive(zip_data: Vec<u8>) -> Result<ExtractedAddonArchive,
     };
 
     // Now set the is_main flag correctly based on the metadata.main path
-    let main_file = metadata.get_main()?;
+    let main_file = normalized_addon_path(&validated_addon_archive_path(metadata.get_main()?)?);
     for file in &mut files {
-        file.is_main = archive_path_matches_manifest_main(&file.name, main_file);
+        file.is_main = archive_path_matches_manifest_main(&file.name, &main_file);
     }
 
     // Verify that we found the main file
@@ -772,7 +934,8 @@ fn extract_addon_zip_archive(zip_data: Vec<u8>) -> Result<ExtractedAddonArchive,
         "Starting permission detection for extracted addon: {}",
         metadata.id
     );
-    let permission_files = archive_files_to_text_files(&files);
+    let package_root = archive_addon_package_root(&files, &main_file)?;
+    let permission_files = archive_files_to_text_files(&files, &package_root);
     log::debug!("Number of files to analyze: {}", permission_files.len());
     for file in &permission_files {
         log::debug!(
@@ -830,14 +993,131 @@ fn extract_addon_zip_archive(zip_data: Vec<u8>) -> Result<ExtractedAddonArchive,
 
 pub fn extract_addon_zip_internal(zip_data: Vec<u8>) -> Result<ExtractedAddon, String> {
     let extracted = extract_addon_zip_archive(zip_data)?;
+    let main_file = normalized_addon_path(&validated_addon_archive_path(
+        extracted.metadata.get_main()?,
+    )?);
+    let package_root = archive_addon_package_root(&extracted.files, &main_file)?;
+    let assets = archive_addon_assets(&extracted.files, &package_root);
     Ok(ExtractedAddon {
         metadata: extracted.metadata,
         files: extracted
             .files
             .into_iter()
-            .map(archive_file_to_addon_file)
+            .filter_map(|mut file| {
+                let path = addon_package_relative_path(&file.name, &package_root)?;
+                if is_brokered_addon_asset_path(&path) {
+                    return None;
+                }
+                file.is_main = path == main_file;
+                file.name = path;
+                Some(archive_file_to_addon_file(file))
+            })
             .collect(),
+        assets,
     })
+}
+
+/// The running Wealthfolio host version. `wealthfolio-core` inherits the workspace
+/// package version (`workspace.package.version`), which is the app version shipped
+/// by both the Tauri desktop app and the server, so `CARGO_PKG_VERSION` is the
+/// authoritative host version here.
+pub const HOST_WEALTHFOLIO_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Parse a dot-separated version into its leading numeric `(major, minor, patch)`
+/// components, ignoring any pre-release/build suffix (e.g. `-beta.1`, `+build`).
+/// Missing components default to 0. Returns `None` when any dotted component is
+/// not a bare integer (`"v4.0.0"`, `"4.0.x"`) — callers must treat that as
+/// unsatisfiable rather than silently comparing against `0.0.0`, which would
+/// turn an author typo into a disabled version gate.
+fn parse_version_triple(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.trim().split(['-', '+']).next().unwrap_or("").trim();
+    if core.is_empty() {
+        return None;
+    }
+    let mut components = [0u64; 3];
+    for (i, part) in core.split('.').enumerate() {
+        let value = part.trim().parse::<u64>().ok()?;
+        if let Some(slot) = components.get_mut(i) {
+            *slot = value;
+        }
+    }
+    Some((components[0], components[1], components[2]))
+}
+
+/// Whether `current` satisfies the minimum `required` version (semver-style numeric
+/// comparison of major.minor.patch). Fails closed: an unparseable version on
+/// either side never satisfies the check.
+pub(crate) fn version_meets_minimum(current: &str, required: &str) -> bool {
+    match (
+        parse_version_triple(current),
+        parse_version_triple(required),
+    ) {
+        (Some(current), Some(required)) => current >= required,
+        _ => false,
+    }
+}
+
+/// Hard-fail install/enable when the addon requires a newer host than the one
+/// running. No-op when `minWealthfolioVersion` is absent; a malformed value is
+/// rejected outright so the author sees the typo instead of the gate silently
+/// evaporating.
+fn enforce_min_wealthfolio_version(manifest: &AddonManifest) -> Result<(), String> {
+    if let Some(required) = manifest.min_wealthfolio_version.as_deref() {
+        let required = required.trim();
+        if required.is_empty() {
+            return Ok(());
+        }
+        if parse_version_triple(required).is_none() {
+            return Err(format!(
+                "Invalid 'minWealthfolioVersion' value '{}' in manifest: expected a version like '3.6.1'",
+                required
+            ));
+        }
+        if !version_meets_minimum(HOST_WEALTHFOLIO_VERSION, required) {
+            return Err(format!(
+                "Addon requires Wealthfolio {} or newer, but this version is {}. Update Wealthfolio to use this addon.",
+                required, HOST_WEALTHFOLIO_VERSION
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_contributed_route_path(path: &str) -> Result<(), String> {
+    if path != path.trim() {
+        return Err(
+            "Invalid contributes.routes path: leading or trailing whitespace is not allowed"
+                .to_string(),
+        );
+    }
+    if path.is_empty() {
+        return Ok(());
+    }
+    if path.starts_with('/') {
+        return Err(
+            "Invalid contributes.routes path: expected a relative path below the addon mount"
+                .to_string(),
+        );
+    }
+    if path
+        .chars()
+        .any(|character| matches!(character, '\\' | '?' | '#' | '%'))
+    {
+        return Err(
+            "Invalid contributes.routes path: backslashes, escapes, queries, and fragments are not allowed"
+                .to_string(),
+        );
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+    {
+        return Err(
+            "Invalid contributes.routes path: empty and traversal segments are not allowed"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub fn parse_manifest_json_metadata(manifest_content: &str) -> Result<AddonManifest, String> {
@@ -936,6 +1216,71 @@ fn parse_manifest_json_metadata_with_options(
         None
     };
 
+    // Declarative contributions (routes + links). Parse the whole `contributes`
+    // sub-object via serde for brevity, then validate: every route has a
+    // non-empty id with a unique host-relative path, and every link (in any slot,
+    // including unknown future slots, which are accepted and round-tripped
+    // as-is) has a non-empty label and references a declared route id.
+    let contributes = match raw_manifest.get("contributes") {
+        Some(value) if !value.is_null() => {
+            let parsed: AddonContributes = serde_json::from_value(value.clone())
+                .map_err(|e| format!("Invalid 'contributes' field in manifest.json: {}", e))?;
+            let mut route_ids = std::collections::HashSet::new();
+            let mut route_paths = std::collections::HashSet::new();
+            for route in &parsed.routes {
+                if route.id.trim().is_empty() {
+                    return Err("Missing 'id' field in contributes.routes entry".to_string());
+                }
+                if !route_ids.insert(route.id.as_str()) {
+                    return Err(format!(
+                        "Invalid 'contributes' field in manifest.json: duplicate route id '{}'",
+                        route.id
+                    ));
+                }
+                let path = route.path.as_deref().unwrap_or("");
+                validate_contributed_route_path(path)?;
+                if !route_paths.insert(path.to_ascii_lowercase()) {
+                    return Err(format!(
+                        "Invalid 'contributes' field in manifest.json: duplicate route path '{}'",
+                        path
+                    ));
+                }
+            }
+            for (slot, links) in &parsed.links {
+                let mut link_ids = std::collections::HashSet::new();
+                for link in links {
+                    if link.route.trim().is_empty() {
+                        return Err(format!(
+                            "Missing 'route' field in contributes.links['{}'] entry",
+                            slot
+                        ));
+                    }
+                    if link.label.trim().is_empty() {
+                        return Err(format!(
+                            "Missing 'label' field in contributes.links['{}'] entry",
+                            slot
+                        ));
+                    }
+                    if !route_ids.contains(link.route.as_str()) {
+                        return Err(format!(
+                            "Invalid 'contributes' field in manifest.json: link in slot '{}' references undeclared route '{}'",
+                            slot, link.route
+                        ));
+                    }
+                    let effective_id = link.id.as_deref().unwrap_or(link.route.as_str());
+                    if !link_ids.insert(effective_id) {
+                        return Err(format!(
+                            "Invalid 'contributes' field in manifest.json: duplicate link id '{}' in slot '{}'",
+                            effective_id, slot
+                        ));
+                    }
+                }
+            }
+            Some(parsed)
+        }
+        _ => None,
+    };
+
     // Validate required fields
     if main.is_none() {
         return Err("Missing 'main' field in manifest.json".to_string());
@@ -1031,6 +1376,7 @@ fn parse_manifest_json_metadata_with_options(
         icon,
         network,
         host_dependencies,
+        contributes,
         installed_at: None,
         updated_at: None,
         source: None,
@@ -1065,7 +1411,11 @@ pub fn read_addon_files_recursive(
             let relative_path = file_path
                 .strip_prefix(base_dir)
                 .map_err(|e| format!("Failed to get relative path: {}", e))?;
-            let relative_path_str = relative_path.to_string_lossy().to_string();
+            let relative_path_str = normalized_addon_path(relative_path);
+
+            if is_brokered_addon_asset_path(&relative_path_str) {
+                continue;
+            }
 
             if relative_path_str.ends_with(".map") {
                 log::debug!("Skipping addon source map '{}'", relative_path_str);
@@ -1104,11 +1454,195 @@ pub fn read_addon_files_recursive(
     Ok(())
 }
 
+#[derive(Debug)]
+struct IndexedAddonAsset {
+    descriptor: AddonAsset,
+    file_path: PathBuf,
+}
+
+#[derive(Clone)]
+struct CachedAddonAssets {
+    package_dir: PathBuf,
+    index: Arc<Vec<IndexedAddonAsset>>,
+}
+
+fn collect_addon_asset_files(
+    current_dir: &Path,
+    base_dir: &Path,
+    assets: &mut Vec<IndexedAddonAsset>,
+    total_size: &mut u64,
+) -> Result<(), String> {
+    let entries = fs::read_dir(current_dir)
+        .map_err(|e| format!("Failed to read addon asset directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read addon asset entry: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect addon asset entry: {}", e))?;
+        let file_path = entry.path();
+
+        if file_type.is_symlink() {
+            return Err("Addon asset directories cannot contain symbolic links".to_string());
+        }
+        if file_type.is_dir() {
+            collect_addon_asset_files(&file_path, base_dir, assets, total_size)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let relative_path = file_path
+            .strip_prefix(base_dir)
+            .map_err(|e| format!("Failed to resolve addon asset path: {}", e))?;
+        let logical_path = normalized_addon_path(relative_path);
+        if !is_brokered_addon_asset_path(&logical_path) {
+            continue;
+        }
+
+        let metadata = entry
+            .metadata()
+            .map_err(|e| format!("Failed to read addon asset metadata: {}", e))?;
+        if metadata.len() > MAX_ADDON_ARCHIVE_FILE_SIZE {
+            return Err(format!(
+                "Addon asset is too large: {} bytes exceeds {} byte limit",
+                metadata.len(),
+                MAX_ADDON_ARCHIVE_FILE_SIZE
+            ));
+        }
+
+        let content =
+            fs::read(&file_path).map_err(|e| format!("Failed to read addon asset: {}", e))?;
+        if content.len() as u64 > MAX_ADDON_ARCHIVE_FILE_SIZE {
+            return Err(format!(
+                "Addon asset is too large: {} bytes exceeds {} byte limit",
+                content.len(),
+                MAX_ADDON_ARCHIVE_FILE_SIZE
+            ));
+        }
+
+        *total_size = total_size
+            .checked_add(content.len() as u64)
+            .ok_or_else(|| "Addon asset size overflowed".to_string())?;
+        if *total_size > MAX_ADDON_ARCHIVE_TOTAL_SIZE {
+            return Err(format!(
+                "Addon assets are too large: {} bytes exceeds {} byte limit",
+                total_size, MAX_ADDON_ARCHIVE_TOTAL_SIZE
+            ));
+        }
+        if assets.len() >= MAX_ADDON_ARCHIVE_ENTRIES {
+            return Err(format!(
+                "Addon has more than {} packaged assets",
+                MAX_ADDON_ARCHIVE_ENTRIES
+            ));
+        }
+
+        assets.push(IndexedAddonAsset {
+            descriptor: addon_asset_descriptor(&logical_path, &content),
+            file_path,
+        });
+    }
+
+    Ok(())
+}
+
+fn collect_installed_addon_package_roots(
+    current_dir: &Path,
+    addon_dir: &Path,
+    main_file: &str,
+    roots: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(current_dir).map_err(|e| {
+        format!(
+            "Failed to read addon directory while locating main file: {}",
+            e
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read addon directory entry: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect addon directory entry: {}", e))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_installed_addon_package_roots(&path, addon_dir, main_file, roots)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let relative_path = path
+            .strip_prefix(addon_dir)
+            .map_err(|e| format!("Failed to resolve installed addon path: {}", e))?;
+        let logical_path = normalized_addon_path(relative_path);
+        let Some(package_root) = addon_package_root_from_main_path(&logical_path, main_file) else {
+            continue;
+        };
+        roots.push(if package_root.is_empty() {
+            addon_dir.to_path_buf()
+        } else {
+            addon_dir.join(package_root)
+        });
+    }
+
+    Ok(())
+}
+
+fn installed_addon_package_dir(addon_dir: &Path, main_file: &str) -> Result<PathBuf, String> {
+    let main_path = validated_addon_archive_path(main_file)?;
+    let normalized_main = normalized_addon_path(&main_path);
+
+    let mut roots = Vec::new();
+    collect_installed_addon_package_roots(addon_dir, addon_dir, &normalized_main, &mut roots)?;
+    roots.sort();
+    roots.dedup();
+    match roots.as_slice() {
+        [package_dir] => Ok(package_dir.clone()),
+        [] => Err("Main addon file not found".to_string()),
+        _ => Err("Multiple addon package roots contain the declared main file".to_string()),
+    }
+}
+
+fn index_addon_assets(addon_dir: &Path) -> Result<Vec<IndexedAddonAsset>, String> {
+    let mut assets = Vec::new();
+    let mut total_size = 0;
+
+    for asset_root in [
+        addon_dir.join("assets"),
+        addon_dir.join("dist").join("assets"),
+    ] {
+        if !asset_root.exists() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&asset_root)
+            .map_err(|e| format!("Failed to inspect addon asset directory: {}", e))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Addon asset directory cannot be a symbolic link".to_string());
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Addon asset root '{}' is not a directory",
+                normalized_addon_path(asset_root.strip_prefix(addon_dir).unwrap_or(&asset_root))
+            ));
+        }
+        collect_addon_asset_files(&asset_root, addon_dir, &mut assets, &mut total_size)?;
+    }
+
+    assets.sort_by(|left, right| left.descriptor.path.cmp(&right.descriptor.path));
+    Ok(assets)
+}
+
 /// Check for addon updates from the API server
 pub async fn check_addon_update_from_api(
     addon_id: &str,
     current_version: &str,
-    instance_id: Option<&str>,
 ) -> Result<AddonUpdateCheckResult, String> {
     validate_addon_id(addon_id)?;
     let api_url = format!(
@@ -1117,14 +1651,13 @@ pub async fn check_addon_update_from_api(
     );
 
     let client = reqwest::Client::new();
-    let response =
-        create_request_with_headers(&client, reqwest::Method::GET, &api_url, instance_id)
-            .send()
-            .await
-            .map_err(|e| {
-                log::error!("Failed to fetch addon info from API: {}", e);
-                format!("Failed to fetch addon info from API: {}", e)
-            })?;
+    let response = create_request_with_headers(&client, reqwest::Method::GET, &api_url)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("Failed to fetch addon info from API: {}", e);
+            format!("Failed to fetch addon info from API: {}", e)
+        })?;
 
     handle_api_response(response, "Update check").await
 }
@@ -1282,10 +1815,7 @@ pub fn clear_staging_directory(base_dir: impl AsRef<Path>) -> Result<(), String>
 }
 
 /// Download addon from store using GET request
-pub async fn download_addon_from_store(
-    addon_id: &str,
-    instance_id: &str,
-) -> Result<Vec<u8>, String> {
+pub async fn download_addon_from_store(addon_id: &str) -> Result<Vec<u8>, String> {
     validate_addon_id(addon_id)?;
     let download_api_url = format!("{}/{}/download", ADDON_STORE_API_BASE_URL, addon_id);
 
@@ -1294,21 +1824,14 @@ pub async fn download_addon_from_store(
         addon_id,
         download_api_url
     );
-    log::debug!("Using instance ID: {}", instance_id);
-
     let client = reqwest::Client::new();
-    let response = create_request_with_headers(
-        &client,
-        reqwest::Method::GET,
-        &download_api_url,
-        Some(instance_id),
-    )
-    .send()
-    .await
-    .map_err(|e| {
-        log::error!("Failed to call download API for addon {}: {}", addon_id, e);
-        format!("Failed to call download API: {}", e)
-    })?;
+    let response = create_request_with_headers(&client, reqwest::Method::GET, &download_api_url)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("Failed to call download API for addon {}: {}", addon_id, e);
+            format!("Failed to call download API: {}", e)
+        })?;
 
     let status = response.status();
     log::debug!(
@@ -1587,21 +2110,18 @@ pub fn remove_addon_from_staging(addon_id: &str, base_dir: impl AsRef<Path>) -> 
 }
 
 /// Fetch available addons from the store API
-pub async fn fetch_addon_store_listings(
-    instance_id: Option<&str>,
-) -> Result<Vec<serde_json::Value>, String> {
+pub async fn fetch_addon_store_listings() -> Result<Vec<serde_json::Value>, String> {
     // Fetch all addons and let frontend filter by status
     let api_url = ADDON_STORE_API_BASE_URL.to_string();
 
     let client = reqwest::Client::new();
-    let response =
-        create_request_with_headers(&client, reqwest::Method::GET, &api_url, instance_id)
-            .send()
-            .await
-            .map_err(|e| {
-                log::error!("Failed to fetch addon store listings: {}", e);
-                format!("Failed to fetch addon store listings: {}", e)
-            })?;
+    let response = create_request_with_headers(&client, reqwest::Method::GET, &api_url)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("Failed to fetch addon store listings: {}", e);
+            format!("Failed to fetch addon store listings: {}", e)
+        })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1655,7 +2175,7 @@ pub async fn submit_addon_rating(
     addon_id: &str,
     rating: u8,
     review: Option<String>,
-    instance_id: &str,
+    rating_instance_id: &str,
 ) -> Result<serde_json::Value, String> {
     validate_addon_id(addon_id)?;
     if !(1..=5).contains(&rating) {
@@ -1673,15 +2193,15 @@ pub async fn submit_addon_rating(
     }
 
     let client = reqwest::Client::new();
-    let response =
-        create_request_with_headers(&client, reqwest::Method::POST, &api_url, Some(instance_id))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| {
-                log::error!("Failed to submit rating for addon {}: {}", addon_id, e);
-                format!("Failed to submit rating: {}", e)
-            })?;
+    let response = create_request_with_headers(&client, reqwest::Method::POST, &api_url)
+        .header("X-Instance-Id", rating_instance_id)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("Failed to submit rating for addon {}: {}", addon_id, e);
+            format!("Failed to submit rating: {}", e)
+        })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1718,15 +2238,124 @@ pub async fn submit_addon_rating(
 /// Service for addon management operations.
 pub struct AddonService {
     addons_root: PathBuf,
-    instance_id: String,
+    rating_instance_id: String,
+    storage_repo: Arc<dyn AddonStorageRepositoryTrait>,
+    package_access: RwLock<()>,
+    asset_indexes: Mutex<HashMap<PathBuf, CachedAddonAssets>>,
 }
 
 impl AddonService {
-    pub fn new(addons_root: impl Into<PathBuf>, instance_id: impl Into<String>) -> Self {
+    pub fn new(
+        addons_root: impl Into<PathBuf>,
+        rating_instance_id: impl Into<String>,
+        storage_repo: Arc<dyn AddonStorageRepositoryTrait>,
+    ) -> Self {
         Self {
             addons_root: addons_root.into(),
-            instance_id: instance_id.into(),
+            rating_instance_id: rating_instance_id.into(),
+            storage_repo,
+            package_access: RwLock::new(()),
+            asset_indexes: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn package_read_guard(
+        &self,
+        addon_id: &str,
+    ) -> Result<(RwLockReadGuard<'_, ()>, PathBuf), String> {
+        let read_guard = self
+            .package_access
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Ok(addon_dir) = self.existing_addon_dir_without_recovery(addon_id) {
+            return Ok((read_guard, addon_dir));
+        }
+        drop(read_guard);
+
+        if validate_addon_id(addon_id).is_ok() {
+            let _write_guard = self
+                .package_access
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.recover_incomplete_replacement_for_addon(addon_id)?;
+        }
+
+        let read_guard = self
+            .package_access
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let addon_dir = self.existing_addon_dir_without_recovery(addon_id)?;
+        Ok((read_guard, addon_dir))
+    }
+
+    fn refresh_addon_asset_index(
+        &self,
+        addon_dir: &Path,
+        package_dir: &Path,
+    ) -> Result<CachedAddonAssets, String> {
+        let index = Arc::new(index_addon_assets(package_dir)?);
+        let cached = CachedAddonAssets {
+            package_dir: package_dir.to_path_buf(),
+            index,
+        };
+        self.asset_indexes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(addon_dir.to_path_buf(), cached.clone());
+        Ok(cached)
+    }
+
+    fn addon_assets_for_request(
+        &self,
+        addon_dir: &Path,
+        main_file: &str,
+    ) -> Result<CachedAddonAssets, String> {
+        if let Some(cached) = self
+            .asset_indexes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(addon_dir)
+            .cloned()
+        {
+            return Ok(cached);
+        }
+
+        let package_dir = installed_addon_package_dir(addon_dir, main_file)?;
+        self.refresh_addon_asset_index(addon_dir, &package_dir)
+    }
+
+    fn invalidate_addon_asset_indexes(&self, addon_dir: &Path) {
+        self.asset_indexes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(addon_dir);
+    }
+
+    fn validate_storage_key(key: &str) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("Invalid storage key: key is empty".to_string());
+        }
+        if key.len() > MAX_ADDON_STORAGE_KEY_LEN {
+            return Err(format!(
+                "Invalid storage key: key must be {} characters or fewer",
+                MAX_ADDON_STORAGE_KEY_LEN
+            ));
+        }
+        // The key is embedded verbatim in the device-sync entity id, which must
+        // match the sync server's allowed charset (letters, digits, and
+        // `_ . : -`). Rejecting anything outside it here guarantees a stored key
+        // can never produce an event the server refuses (which would otherwise
+        // fail the whole push batch).
+        if !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+        {
+            return Err(
+                "Invalid storage key: only letters, digits, and the characters _ . : - are allowed"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn read_manifest_if_exists(&self, addon_dir: &Path) -> Result<Option<AddonManifest>, String> {
@@ -1777,9 +2406,8 @@ impl AddonService {
         Err("Addon not found".to_string())
     }
 
-    fn existing_addon_dir(&self, addon_id: &str) -> Result<PathBuf, String> {
+    fn existing_addon_dir_without_recovery(&self, addon_id: &str) -> Result<PathBuf, String> {
         if validate_addon_id(addon_id).is_ok() {
-            self.recover_incomplete_replacement_for_addon(addon_id)?;
             let addon_dir = get_addon_path(&self.addons_root, addon_id)?;
             if addon_dir.exists() {
                 return Ok(addon_dir);
@@ -1787,6 +2415,13 @@ impl AddonService {
         }
 
         self.find_installed_addon_dir_by_manifest_id(addon_id)
+    }
+
+    fn existing_addon_dir(&self, addon_id: &str) -> Result<PathBuf, String> {
+        if validate_addon_id(addon_id).is_ok() {
+            self.recover_incomplete_replacement_for_addon(addon_id)?;
+        }
+        self.existing_addon_dir_without_recovery(addon_id)
     }
 
     fn write_addon_archive_files(
@@ -1943,6 +2578,10 @@ impl AddonService {
         files: &[AddonArchiveFile],
         metadata: &AddonManifest,
     ) -> Result<(), String> {
+        let _package_guard = self
+            .package_access
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let addon_dir = get_addon_path(&self.addons_root, addon_id)?;
         let addons_dir = ensure_addons_directory(&self.addons_root)?;
         let nonce = uuid::Uuid::new_v4();
@@ -1978,6 +2617,7 @@ impl AddonService {
                 if had_existing_addon {
                     let _ = fs::remove_dir_all(&backup_dir);
                 }
+                self.invalidate_addon_asset_indexes(&addon_dir);
                 Ok(())
             }
             Err(err) => {
@@ -1991,7 +2631,7 @@ impl AddonService {
     }
 
     fn enabled_manifest_for_addon(&self, addon_id: &str) -> Result<AddonManifest, String> {
-        let addon_dir = self.existing_addon_dir(addon_id)?;
+        let (_package_guard, addon_dir) = self.package_read_guard(addon_id)?;
         let manifest = self.read_manifest_or_error(&addon_dir)?;
         if !manifest.is_enabled() {
             return Err("Addon is disabled".to_string());
@@ -2026,6 +2666,9 @@ impl AddonService {
             .map(|permissions| {
                 permissions
                     .iter()
+                    .filter(|permission| {
+                        !BASELINE_PERMISSION_CATEGORIES.contains(&permission.category.as_str())
+                    })
                     .flat_map(|permission| {
                         permission
                             .functions
@@ -2210,6 +2853,7 @@ impl AddonServiceTrait for AddonService {
         approved_network_hosts: Vec<String>,
     ) -> Result<AddonManifest, String> {
         let extracted = extract_addon_zip_archive(zip_data)?;
+        enforce_min_wealthfolio_version(&extracted.metadata)?;
         let addon_id = extracted.metadata.id.clone();
         let metadata = Self::apply_network_approvals(
             extracted.metadata.to_installed(enable_after_install)?,
@@ -2241,6 +2885,10 @@ impl AddonServiceTrait for AddonService {
                 addon_id, extracted.metadata.id
             ));
         }
+        if let Err(err) = enforce_min_wealthfolio_version(&extracted.metadata) {
+            let _ = remove_addon_from_staging(addon_id, &self.addons_root);
+            return Err(err);
+        }
         let installed_addon_id = extracted.metadata.id.clone();
         let metadata = Self::apply_network_approvals(
             extracted.metadata.to_installed(enable_after_install)?,
@@ -2255,15 +2903,29 @@ impl AddonServiceTrait for AddonService {
     }
 
     async fn uninstall_addon(&self, addon_id: &str) -> Result<(), String> {
-        let addon_dir = self.existing_addon_dir(addon_id)?;
-        if !addon_dir.exists() {
-            return Err("Addon not found".to_string());
+        {
+            let _package_guard = self
+                .package_access
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let addon_dir = self.existing_addon_dir(addon_id)?;
+            if !addon_dir.exists() {
+                return Err("Addon not found".to_string());
+            }
+            fs::remove_dir_all(&addon_dir).map_err(|e| format!("Failed to remove addon: {}", e))?;
+            self.invalidate_addon_asset_indexes(&addon_dir);
         }
-        fs::remove_dir_all(&addon_dir).map_err(|e| format!("Failed to remove addon: {}", e))?;
+        if let Err(error) = self.clear_addon_storage(addon_id).await {
+            log::warn!("Failed to remove storage for addon '{addon_id}': {error}");
+        }
         Ok(())
     }
 
     fn list_installed_addons(&self) -> Result<Vec<InstalledAddon>, String> {
+        let _package_guard = self
+            .package_access
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.recover_incomplete_replacements()?;
         let addons_dir = ensure_addons_directory(&self.addons_root)?;
         let mut installed = Vec::new();
@@ -2303,19 +2965,20 @@ impl AddonServiceTrait for AddonService {
     }
 
     fn load_addon_for_runtime(&self, addon_id: &str) -> Result<ExtractedAddon, String> {
-        let addon_dir = self.existing_addon_dir(addon_id)?;
+        let (_package_guard, addon_dir) = self.package_read_guard(addon_id)?;
         let manifest = self.read_manifest_or_error(&addon_dir)?;
 
         if !manifest.is_enabled() {
             return Err("Addon is disabled".to_string());
         }
 
+        let main_file = normalized_addon_path(&validated_addon_archive_path(manifest.get_main()?)?);
+        let package_dir = installed_addon_package_dir(&addon_dir, &main_file)?;
         let mut files = Vec::new();
-        read_addon_files_recursive(&addon_dir, &addon_dir, &mut files)?;
+        read_addon_files_recursive(&package_dir, &package_dir, &mut files)?;
 
-        let main_file = manifest.get_main()?;
         for f in &mut files {
-            f.is_main = archive_path_matches_manifest_main(&f.name, main_file);
+            f.is_main = f.name.replace('\\', "/") == main_file;
         }
 
         if !files.iter().any(|f| f.is_main) {
@@ -2329,7 +2992,67 @@ impl AddonServiceTrait for AddonService {
             detected_permissions,
         ));
 
-        Ok(ExtractedAddon { metadata, files })
+        let assets = self
+            .refresh_addon_asset_index(&addon_dir, &package_dir)?
+            .index
+            .iter()
+            .map(|asset| asset.descriptor.clone())
+            .collect();
+
+        Ok(ExtractedAddon {
+            metadata,
+            files,
+            assets,
+        })
+    }
+
+    fn load_addon_asset(
+        &self,
+        addon_id: &str,
+        asset_id: &str,
+    ) -> Result<AddonAssetContent, String> {
+        if asset_id.len() != 64
+            || !asset_id
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
+            return Err("Invalid addon asset id".to_string());
+        }
+        let (_package_guard, addon_dir) = self.package_read_guard(addon_id)?;
+        let manifest = self.read_manifest_or_error(&addon_dir)?;
+        if !manifest.is_enabled() {
+            return Err("Addon is disabled".to_string());
+        }
+
+        let cached_assets = self.addon_assets_for_request(&addon_dir, manifest.get_main()?)?;
+        let indexed_asset = cached_assets
+            .index
+            .iter()
+            .find(|asset| asset.descriptor.id == asset_id)
+            .ok_or_else(|| "Addon asset not found".to_string())?;
+        let canonical_package_dir = fs::canonicalize(&cached_assets.package_dir)
+            .map_err(|e| format!("Failed to resolve addon package directory: {}", e))?;
+        let canonical_asset_path = fs::canonicalize(&indexed_asset.file_path)
+            .map_err(|e| format!("Failed to resolve addon asset: {}", e))?;
+        if !canonical_asset_path.starts_with(&canonical_package_dir) {
+            return Err("Addon asset resolves outside its package directory".to_string());
+        }
+        let bytes = fs::read(&canonical_asset_path)
+            .map_err(|e| format!("Failed to read addon asset: {}", e))?;
+        if bytes.len() as u64 > MAX_ADDON_ARCHIVE_FILE_SIZE {
+            return Err(format!(
+                "Addon asset exceeds {} byte limit",
+                MAX_ADDON_ARCHIVE_FILE_SIZE
+            ));
+        }
+        if addon_asset_id(&indexed_asset.descriptor.path, &bytes) != indexed_asset.descriptor.id {
+            return Err("Addon asset changed after its package was indexed".to_string());
+        }
+
+        Ok(AddonAssetContent {
+            bytes,
+            mime_type: indexed_asset.descriptor.mime_type.clone(),
+        })
     }
 
     fn get_enabled_addons_on_startup(&self) -> Result<Vec<ExtractedAddon>, String> {
@@ -2347,65 +3070,68 @@ impl AddonServiceTrait for AddonService {
     }
 
     async fn check_addon_update(&self, addon_id: &str) -> Result<AddonUpdateCheckResult, String> {
-        let addon_dir = self.existing_addon_dir(addon_id)?;
-        let manifest = self.read_manifest_or_error(&addon_dir)?;
-        check_addon_update_from_api(addon_id, &manifest.version, Some(&self.instance_id)).await
+        let version = {
+            let (_package_guard, addon_dir) = self.package_read_guard(addon_id)?;
+            self.read_manifest_or_error(&addon_dir)?.version
+        };
+        check_addon_update_from_api(addon_id, &version).await
     }
 
     async fn check_all_addon_updates(&self) -> Result<Vec<AddonUpdateCheckResult>, String> {
-        self.recover_incomplete_replacements()?;
-        let addons_dir = ensure_addons_directory(&self.addons_root)?;
-        let mut results = Vec::new();
-
-        if addons_dir.exists() {
-            for entry in fs::read_dir(&addons_dir)
-                .map_err(|e| format!("Failed to read addons directory: {}", e))?
-            {
-                let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-                let dir = entry.path();
-                if !dir.is_dir() {
-                    continue;
-                }
-                if Self::is_hidden_addon_dir(&dir) {
-                    continue;
-                }
-                let manifest = match self.read_manifest_if_exists(&dir) {
-                    Ok(Some(m)) => m,
-                    Ok(None) => continue,
-                    Err(err) => {
-                        log::error!("Skipping invalid addon manifest in {:?}: {}", dir, err);
+        let manifests = {
+            let _package_guard = self
+                .package_access
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.recover_incomplete_replacements()?;
+            let addons_dir = ensure_addons_directory(&self.addons_root)?;
+            let mut manifests = Vec::new();
+            if addons_dir.exists() {
+                for entry in fs::read_dir(&addons_dir)
+                    .map_err(|e| format!("Failed to read addons directory: {}", e))?
+                {
+                    let entry =
+                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                    let dir = entry.path();
+                    if !dir.is_dir() || Self::is_hidden_addon_dir(&dir) {
                         continue;
                     }
-                };
-                let addon_id = manifest.id.clone();
-                match check_addon_update_from_api(
-                    &addon_id,
-                    &manifest.version,
-                    Some(&self.instance_id),
-                )
-                .await
-                {
-                    Ok(result) => results.push(result),
-                    Err(err) => {
-                        log::error!("Failed to check update for addon {}: {}", addon_id, err);
-                        results.push(AddonUpdateCheckResult {
-                            addon_id,
-                            update_info: AddonUpdateInfo {
-                                current_version: manifest.version,
-                                latest_version: "unknown".to_string(),
-                                update_available: false,
-                                download_url: None,
-                                sha256: None,
-                                release_notes: None,
-                                release_date: None,
-                                changelog_url: None,
-                                is_critical: None,
-                                has_breaking_changes: None,
-                                min_wealthfolio_version: None,
-                            },
-                            error: Some(err),
-                        });
+                    match self.read_manifest_if_exists(&dir) {
+                        Ok(Some(manifest)) => manifests.push(manifest),
+                        Ok(None) => continue,
+                        Err(err) => {
+                            log::error!("Skipping invalid addon manifest in {:?}: {}", dir, err);
+                        }
                     }
+                }
+            }
+            manifests
+        };
+
+        let mut results = Vec::new();
+        for manifest in manifests {
+            let addon_id = manifest.id.clone();
+            match check_addon_update_from_api(&addon_id, &manifest.version).await {
+                Ok(result) => results.push(result),
+                Err(err) => {
+                    log::error!("Failed to check update for addon {}: {}", addon_id, err);
+                    results.push(AddonUpdateCheckResult {
+                        addon_id,
+                        update_info: AddonUpdateInfo {
+                            current_version: manifest.version,
+                            latest_version: "unknown".to_string(),
+                            update_available: false,
+                            download_url: None,
+                            sha256: None,
+                            release_notes: None,
+                            release_date: None,
+                            changelog_url: None,
+                            is_critical: None,
+                            has_breaking_changes: None,
+                            min_wealthfolio_version: None,
+                        },
+                        error: Some(err),
+                    });
                 }
             }
         }
@@ -2413,14 +3139,16 @@ impl AddonServiceTrait for AddonService {
     }
 
     async fn update_addon_from_store(&self, addon_id: &str) -> Result<AddonManifest, String> {
-        let addon_dir = self.existing_addon_dir(addon_id)?;
-        let previous_manifest = self.read_manifest_if_exists(&addon_dir)?;
+        let previous_manifest = {
+            let (_package_guard, addon_dir) = self.package_read_guard(addon_id)?;
+            self.read_manifest_if_exists(&addon_dir)?
+        };
         let was_enabled = previous_manifest
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false);
 
-        let zip_data = download_addon_from_store(addon_id, &self.instance_id).await?;
+        let zip_data = download_addon_from_store(addon_id).await?;
         let extracted = extract_addon_zip_archive(zip_data)?;
         if extracted.metadata.id != addon_id {
             return Err(format!(
@@ -2428,6 +3156,7 @@ impl AddonServiceTrait for AddonService {
                 addon_id, extracted.metadata.id
             ));
         }
+        enforce_min_wealthfolio_version(&extracted.metadata)?;
         Self::ensure_update_does_not_add_permissions(
             previous_manifest.as_ref(),
             &extracted.metadata,
@@ -2467,16 +3196,87 @@ impl AddonServiceTrait for AddonService {
         result
     }
 
+    fn update_addon_network_approvals(
+        &self,
+        addon_id: &str,
+        approved_network_hosts: Vec<String>,
+    ) -> Result<AddonManifest, String> {
+        let _package_guard = self
+            .package_access
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let addon_dir = self.existing_addon_dir(addon_id)?;
+        let manifest = self.read_manifest_or_error(&addon_dir)?;
+        let manifest = Self::apply_network_approvals(manifest, &approved_network_hosts);
+        self.write_manifest(&addon_dir, &manifest)?;
+        Ok(manifest)
+    }
+
     fn toggle_addon(&self, addon_id: &str, enabled: bool) -> Result<(), String> {
+        let _package_guard = self
+            .package_access
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let addon_dir = self.existing_addon_dir(addon_id)?;
         let mut manifest = self.read_manifest_or_error(&addon_dir)?;
+        if enabled {
+            enforce_min_wealthfolio_version(&manifest)?;
+        }
         manifest.enabled = Some(enabled);
         self.write_manifest(&addon_dir, &manifest)?;
         Ok(())
     }
 
+    async fn get_addon_storage_item(
+        &self,
+        addon_id: &str,
+        key: &str,
+    ) -> Result<Option<String>, String> {
+        validate_addon_id(addon_id)?;
+        Self::validate_storage_key(key)?;
+        self.storage_repo.get(addon_id, key).await
+    }
+
+    async fn set_addon_storage_item(
+        &self,
+        addon_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        validate_addon_id(addon_id)?;
+        Self::validate_storage_key(key)?;
+        // Bound the serialized sync payload, not the raw value: this is the exact
+        // plaintext that gets encrypted and pushed, so it matches what the sync
+        // server validates and JSON escaping can't inflate past the check.
+        let payload_len = serde_json::to_string(&json!({
+            "addon_id": addon_id,
+            "key": key,
+            "value": value,
+        }))
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
+        if payload_len > MAX_ADDON_STORAGE_SYNC_PAYLOAD_LEN {
+            return Err(format!(
+                "Invalid storage value: too large to sync across devices (max ~{} KB)",
+                MAX_ADDON_STORAGE_SYNC_PAYLOAD_LEN / 1024
+            ));
+        }
+        self.storage_repo.set(addon_id, key, value).await
+    }
+
+    async fn delete_addon_storage_item(&self, addon_id: &str, key: &str) -> Result<(), String> {
+        validate_addon_id(addon_id)?;
+        Self::validate_storage_key(key)?;
+        self.storage_repo.delete(addon_id, key).await
+    }
+
+    async fn clear_addon_storage(&self, addon_id: &str) -> Result<(), String> {
+        validate_addon_id(addon_id)?;
+        self.storage_repo.delete_all(addon_id).await
+    }
+
     async fn download_addon_to_staging(&self, addon_id: &str) -> Result<ExtractedAddon, String> {
-        let zip = download_addon_from_store(addon_id, &self.instance_id).await?;
+        let zip = download_addon_from_store(addon_id).await?;
         let _staged_path = save_addon_to_staging(addon_id, &self.addons_root, &zip)?;
         let extracted = extract_addon_zip_internal(zip)?;
         if extracted.metadata.id != addon_id {
@@ -2499,7 +3299,7 @@ impl AddonServiceTrait for AddonService {
     }
 
     async fn fetch_store_listings(&self) -> Result<Vec<serde_json::Value>, String> {
-        fetch_addon_store_listings(Some(&self.instance_id)).await
+        fetch_addon_store_listings().await
     }
 
     async fn submit_rating(
@@ -2508,7 +3308,7 @@ impl AddonServiceTrait for AddonService {
         rating: u8,
         review: Option<String>,
     ) -> Result<serde_json::Value, String> {
-        submit_addon_rating(addon_id, rating, review, &self.instance_id).await
+        submit_addon_rating(addon_id, rating, review, &self.rating_instance_id).await
     }
 
     fn extract_addon_zip(&self, zip_data: Vec<u8>) -> Result<ExtractedAddon, String> {

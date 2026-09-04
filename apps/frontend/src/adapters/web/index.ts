@@ -11,6 +11,7 @@ export { isDesktop, isWeb, logger } from "./core";
 export { RunEnvs } from "../types";
 export type {
   AddonFile,
+  AddonAsset,
   AddonInstallResult,
   AddonManifest,
   AddonNetworkRequest,
@@ -249,8 +250,23 @@ export {
   addExchangeRate,
   deleteExchangeRate,
   getExchangeRates,
+  getExchangeRatesForDates,
   updateExchangeRate,
 } from "../shared/exchange-rates";
+
+// Spending Categorization Commands
+export {
+  createCategorizationRule,
+  deleteCategorizationRule,
+  getSpendCategories,
+  isSpendingEnabled,
+  listCategorizationRules,
+  rerunCategorizationRules,
+  SPEND_CATEGORY_KIND_TO_TAXONOMY_ID,
+  TAXONOMY_ID_TO_SPEND_CATEGORY_KIND,
+  updateCategorizationRule,
+  upsertCategorizationRule,
+} from "../shared/spending";
 
 // Alternative Assets Commands
 export {
@@ -264,6 +280,14 @@ export {
   updateAlternativeAssetMetadata,
   updateAlternativeAssetValuation,
 } from "../shared/alternative-assets";
+
+// Asset Logo Commands
+export {
+  deleteAssetLogo,
+  getAssetLogo,
+  listAssetLogos,
+  upsertAssetLogo,
+} from "../shared/asset-logos";
 
 // Connect Commands (Broker + Device Sync + Auth)
 export {
@@ -354,6 +378,7 @@ export {
 export {
   archiveAllocationTarget,
   calculateRebalancePlan,
+  canonicalizeEligibleAssetIds,
   createAllocationTarget,
   deleteAllocationTarget,
   getAllocationTargetDrift,
@@ -448,11 +473,13 @@ export {
   checkAddonUpdate,
   checkAllAddonUpdates,
   clearAddonStaging,
+  deleteAddonStorageItem,
   downloadAddonForReview,
   extractAddon,
   extractAddonZip,
   fetchAddonStoreListings,
   getAddonRatings,
+  getAddonStorageItem,
   getEnabledAddons,
   getEnabledAddonsOnStartup,
   getInstalledAddons,
@@ -463,10 +490,13 @@ export {
   listInstalledAddons,
   loadAddon,
   loadAddonForRuntime,
+  loadAddonAsset,
+  setAddonStorageItem,
   submitAddonRating,
   toggleAddon,
   uninstallAddon,
   updateAddon,
+  updateAddonNetworkApprovals,
 } from "./addons";
 
 // FIRE Planner (desktop-only — stubs throw at runtime)

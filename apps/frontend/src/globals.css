@@ -673,6 +673,14 @@ body.qr-scan-active .scan-hide-target {
     padding-bottom: var(--mobile-nav-total-offset) !important;
   }
 
+  /* Add-on routes scroll inside their sandbox iframe, so host page padding
+     cannot create bottom-nav clearance. Keep the entire sandbox viewport,
+     including its loading/error states, above the floating navigation. */
+  [data-page-scroll-container][data-with-mobile-nav-offset="true"]
+    [data-addon-route-viewport="true"] {
+    height: calc(100% - var(--mobile-nav-total-offset));
+  }
+
   .touch-manipulation {
     touch-action: manipulation;
   }
@@ -703,6 +711,19 @@ body.qr-scan-active .scan-hide-target {
   .safe-area-inset-x {
     padding-left: env(safe-area-inset-left, 0);
     padding-right: env(safe-area-inset-right, 0);
+  }
+
+  /*
+   * Nudges a header's leading group clear of the macOS traffic lights when no
+   * sidebar covers the top-left corner. Uses a transform, not padding or
+   * margin, so only this group moves -- the row's other content (page actions
+   * on the trailing edge) keeps its original position.
+   */
+  .titlebar-nudge {
+    /* Holds the whole transform so the default is `none`, not translateY(0px):
+       any transform other than `none` would create a stacking context and a
+       containing block for fixed/absolute descendants on every platform. */
+    transform: var(--titlebar-nudge, none);
   }
 
   /* Dynamic viewport height to avoid mobile address bar issues */
@@ -796,6 +817,16 @@ body.qr-scan-active .scan-hide-target {
   .aui-root,
   .aui-root .flex,
   .aui-root .grid {
+    overflow-x: visible;
+  }
+
+  /* The .flex/.grid rule above sets overflow-x, which per spec forces the other
+     axis to compute as `auto` — so every flex row becomes a scroll container and
+     paints an empty scrollbar track wherever the platform always shows them.
+     The spending card list is bare rows on the page background, where those
+     tracks are plainly visible, so it opts out the same way. */
+  .spending-activity-list .flex,
+  .spending-activity-list .grid {
     overflow-x: visible;
   }
 

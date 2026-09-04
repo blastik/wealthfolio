@@ -1,13 +1,17 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 
+import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
+import {
+  AmountDisplay,
+  GainPercent,
+  PriceDisplay,
+  QuantityDisplay,
+  useDateFormatting,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@wealthfolio/ui/components/ui/card";
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
-import { formatPercent } from "@wealthfolio/ui";
-import { GainPercent } from "@wealthfolio/ui";
-import { AmountDisplay } from "@wealthfolio/ui";
-import { QuantityDisplay } from "@wealthfolio/ui";
-import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
 
 interface AssetDetail {
   numShares: number;
@@ -49,6 +53,8 @@ interface AssetDetail {
     strike?: number | null;
     expiration?: string | null;
   } | null;
+  /** Multiplier configured on the asset. Independent of any holding. */
+  contractMultiplier?: number | null;
   className?: string;
 }
 
@@ -64,6 +70,9 @@ const SectionHeader: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 );
 
 const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) => {
+  const numberFormatting = useNumberFormatting();
+  const dateFormatting = useDateFormatting();
+
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
 
@@ -92,6 +101,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
     quote,
     bondSpec,
     optionSpec,
+    contractMultiplier,
   } = assetData;
 
   const isOption = optionSpec != null;
@@ -99,6 +109,8 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
   const averageCostLabel = isOption
     ? t("asset:detailCard.average_premium")
     : t("asset:detailCard.average_cost");
+  const hasFxEffect =
+    fxEffect !== null && currency.trim().toUpperCase() !== baseCurrency.trim().toUpperCase();
 
   const amountTone = (amount: number | null) => {
     if (amount == null || amount === 0) return "";
@@ -112,9 +124,12 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
     },
     {
       label: averageCostLabel,
-      value: <AmountDisplay value={averagePrice} currency={currency} isHidden={isBalanceHidden} />,
+      value: <PriceDisplay value={averagePrice} currency={currency} isHidden={isBalanceHidden} />,
     },
-    { label: t("asset:detailCard.percent_of_portfolio"), value: formatPercent(portfolioPercent) },
+    {
+      label: t("asset:detailCard.percent_of_portfolio"),
+      value: numberFormatting.formatPercent(portfolioPercent),
+    },
   ];
 
   const performanceRows: {
@@ -156,13 +171,17 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
       percent: null,
       color: amountTone(income),
     },
-    {
-      label: t("asset:detailCard.fx_effect"),
-      amount: fxEffect,
-      currency: baseCurrency,
-      percent: null,
-      color: amountTone(fxEffect),
-    },
+    ...(hasFxEffect
+      ? [
+          {
+            label: t("asset:detailCard.fx_effect"),
+            amount: fxEffect,
+            currency: baseCurrency,
+            percent: null,
+            color: amountTone(fxEffect),
+          },
+        ]
+      : []),
     {
       label: t("asset:detailCard.price_return"),
       amount: null,
@@ -209,7 +228,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
         <Separator className="my-3" />
         <div>
           <SectionHeader>{t("asset:detailCard.position")}</SectionHeader>
-          <div className="space-y-1.5 text-sm">
+          <div className="space-y-2 text-sm">
             {positionRows.map(({ label, value }, idx) => (
               <div key={idx} className="flex justify-between">
                 <span className="text-muted-foreground">{label}</span>
@@ -222,7 +241,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
         <Separator className="my-3" />
         <div>
           <SectionHeader>{t("asset:detailCard.performance")}</SectionHeader>
-          <div className="space-y-1.5 text-sm">
+          <div className="space-y-2 text-sm">
             {performanceRows.map(
               ({ label, amount, currency: rowCurrency, percent, color }, idx) => (
                 <div key={idx} className="flex items-center justify-between">
@@ -264,7 +283,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.open")}
                   </span>
                   <div className="text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={quote.open}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -276,7 +295,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.close")}
                   </span>
                   <div className="text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={quote.close}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -288,7 +307,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.high")}
                   </span>
                   <div className="text-success text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={quote.high}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -298,7 +317,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                 <div className="flex flex-col items-end">
                   <span className="text-muted-foreground text-xs">{t("asset:detailCard.low")}</span>
                   <div className="text-destructive text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={quote.low}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -310,7 +329,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.adj_close")}
                   </span>
                   <div className="text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={quote.adjclose}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -322,10 +341,26 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.volume")}
                   </span>
                   <span className="text-sm font-medium">
-                    {new Intl.NumberFormat().format(quote.volume)}
+                    {numberFormatting.formatDecimal(quote.volume)}
                   </span>
                 </div>
               </div>
+            </div>
+          </>
+        )}
+
+        {/* Shown outside the option block: futures and CFDs arrive as EQUITY and
+            carry a multiplier too, and a scaled value is unexplainable without it. */}
+        {contractMultiplier != null && contractMultiplier !== 1 && (
+          <>
+            <Separator className="my-3" />
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground text-xs">
+                {t("asset:detailCard.multiplier")}
+              </span>
+              <span className="text-sm font-medium">
+                {numberFormatting.formatDecimal(contractMultiplier)}
+              </span>
             </div>
           </>
         )}
@@ -355,7 +390,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.maturity")}
                   </span>
                   <span className="text-sm font-medium">
-                    {new Date(bondSpec.maturityDate + "T00:00:00").toLocaleDateString(undefined, {
+                    {dateFormatting.formatCalendarDate(bondSpec.maturityDate, {
                       year: "numeric",
                       month: "short",
                       day: "numeric",
@@ -385,7 +420,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.strike")}
                   </span>
                   <div className="text-sm font-medium">
-                    <AmountDisplay
+                    <PriceDisplay
                       value={optionSpec.strike}
                       currency={quoteCurrency ?? currency}
                       isHidden={isBalanceHidden}
@@ -399,7 +434,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                     {t("asset:detailCard.expiry")}
                   </span>
                   <span className="text-sm font-medium">
-                    {new Date(optionSpec.expiration + "T00:00:00").toLocaleDateString(undefined, {
+                    {dateFormatting.formatCalendarDate(optionSpec.expiration, {
                       year: "numeric",
                       month: "short",
                       day: "numeric",

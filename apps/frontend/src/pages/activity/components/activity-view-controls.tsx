@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { DateRange } from "react-day-picker";
 
 import { DateRangeFilter } from "@/features/spending/components/date-range-filter";
+import { localizeActivityTypeName } from "@/lib/activity-utils";
 import { ActivityType, ActivityTypeNames, INSTRUMENT_TYPE_OPTIONS } from "@/lib/constants";
 import { debounce } from "@/lib/debounce";
 import type { Account, AccountScope, PortfolioWithAccounts } from "@/lib/types";
@@ -126,11 +127,11 @@ export function ActivityViewControls({
 
   const activityOptions = useMemo(
     () =>
-      (Object.entries(ActivityTypeNames) as [ActivityType, string][]).map(([value, label]) => ({
+      (Object.keys(ActivityTypeNames) as ActivityType[]).map((value) => ({
         value,
-        label,
+        label: localizeActivityTypeName(t, value),
       })),
-    [],
+    [t],
   );
 
   const instrumentTypeOptions = useMemo(
@@ -161,6 +162,7 @@ export function ActivityViewControls({
       <div className="flex flex-1 flex-wrap items-center gap-2">
         <FacetedSearchInput
           value={localSearch}
+          placeholder={t("activity:search_placeholder")}
           onChange={(value) => {
             setLocalSearch(value);
             debouncedSearch(value);

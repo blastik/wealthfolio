@@ -4,7 +4,7 @@
  * TypeScript SDK for building Wealthfolio addons with enhanced functionality,
  * type safety, and comprehensive permission management.
  *
- * @version 1.0.0
+ * @version 3.8.0
  * @author Wealthfolio Team
  * @license MIT
  */
@@ -12,6 +12,7 @@
 // Core types
 export type {
   AddonContext,
+  AddonAssets,
   AddonEnableFunction,
   AddonRouteLocation,
   AddonRouteRenderContext,
@@ -35,6 +36,7 @@ export type {
   NetworkRequest,
   NetworkResponse,
   SnapshotsAPI,
+  StorageAPI,
   ToastAPI,
   DividendEvent,
   FetchDividendsOptions,
@@ -50,6 +52,10 @@ export type * from './data-types';
 // Manifest and metadata types
 export type {
   AddonFile,
+  AddonAsset,
+  AddonContributedLink,
+  AddonContributedRoute,
+  AddonContributes,
   AddonHostDependencies,
   AddonInstallResult,
   AddonManifest,
@@ -74,9 +80,11 @@ export type {
 } from './permissions';
 
 export {
+  BASELINE_PERMISSION_CATEGORIES,
   getFunctionRiskLevel,
   getPermissionCategoriesByRisk,
   getPermissionCategory,
+  isBaselineCategory,
   isPermissionRequired,
   PERMISSION_CATEGORIES,
 } from './permissions';
@@ -104,6 +112,15 @@ export { HOST_DEPENDENCIES } from './host-dependencies';
 // Sidebar icon names (see SidebarItemConfig.icon)
 export { ADDON_ICON_NAMES } from './icons';
 export type { AddonIconName } from './icons';
+
+// Addon translations (implemented by the host sandbox)
+export { registerTranslations, useAddonTranslation } from './i18n';
+export type {
+  AddonTranslationApi,
+  AddonTranslationBundle,
+  AddonTranslationResources,
+  AddonTranslationRuntime,
+} from './i18n';
 
 /**
  * Addons receive their context as a parameter to the enable() function.

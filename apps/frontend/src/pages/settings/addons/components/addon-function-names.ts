@@ -58,9 +58,19 @@ export const FUNCTION_DISPLAY_NAMES: Record<string, string> = {
   "currency.getAll": "View exchange rates",
   "currency.update": "Update currency rates",
   "currency.add": "Add new exchange rates",
+  "currency.getRatesForDates": "View historical exchange rates",
   "exchangeRates.getAll": "View exchange rates",
   "exchangeRates.update": "Update currency rates",
   "exchangeRates.add": "Add new exchange rates",
+  "exchangeRates.getRatesForDates": "View historical exchange rates",
+
+  // SpendingAPI functions
+  "spending.isEnabled": "Check whether Spending is enabled",
+  "spending.getCategories": "View your spend categories",
+  "spending.getRules": "View its own auto-categorization rules",
+  "spending.saveRule": "Create or update auto-categorization rules",
+  "spending.deleteRule": "Delete auto-categorization rules",
+  "spending.rerunRules": "Re-apply categorization rules to your transactions",
 
   // ContributionLimitsAPI functions
   "contributionLimits.getAll": "View contribution limits",
@@ -105,12 +115,6 @@ export const FUNCTION_DISPLAY_NAMES: Record<string, string> = {
   // EventsAPI functions - Market events
   "events.market.onSyncStart": "Monitor market sync start",
   "events.market.onSyncComplete": "Monitor market sync completion",
-
-  // UI functions (addon extensions) - these use dotted notation in backend detection
-  "ui.sidebar.addItem": "Add navigation items",
-  "ui.router.add": "Add new pages",
-  "ui.navigation.navigate": "Navigate within the app",
-  "ui.onDisable": "Run cleanup when disabled",
 
   // Network broker
   "network.request": "Send brokered network requests",

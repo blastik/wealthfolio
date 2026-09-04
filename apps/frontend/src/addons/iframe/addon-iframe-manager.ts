@@ -1,5 +1,5 @@
 import type { AddonManifest, Permission, SidebarItemConfig } from "@wealthfolio/addon-sdk";
-import type { AddonFile } from "@/adapters/types";
+import type { AddonAsset, AddonFile } from "@/adapters/types";
 import {
   clearAddonRegistrations,
   createAddonHostAPI,
@@ -8,12 +8,24 @@ import {
   removeAddonNavItem,
   removeAddonRoute,
 } from "@/addons/addons-runtime-context";
-import { logger } from "@/adapters";
+import { loadAddonAsset, logger } from "@/adapters";
 import { toast } from "sonner";
 import { collectAddonThemeSnapshot, type AddonThemeSnapshot } from "./addon-sandbox-theme";
+import {
+  collectAddonLocalizationSnapshot,
+  subscribeToAddonLocalization,
+  type AddonLocalizationSnapshot,
+} from "./addon-sandbox-localization";
 import { createPermissionGuard, type PermissionGuard } from "../type-bridge";
+import {
+  ADDON_SANDBOX_RUNTIME_PROTOCOL_VERSION,
+  loadAddonSandboxRuntimeAssets,
+} from "./addon-sandbox-assets";
+import { tickerLogoAssetBridge } from "./ticker-logo-asset-bridge";
+import addonSandboxDocument from "../../../addon-sandbox.html?raw";
 
 const CHANNEL = "wealthfolio:addon-sandbox:v1";
+const BOOTSTRAP_TIMEOUT_MS = 30_000;
 const LOAD_TIMEOUT_MS = 10_000;
 const ROUTE_RENDER_TIMEOUT_MS = 10_000;
 const DISABLE_TIMEOUT_MS = 1_000;
@@ -23,7 +35,12 @@ interface StartAddonInput {
   manifest: AddonManifest;
   code: string;
   files?: AddonFile[];
+  assets?: AddonAsset[];
+  /** Development-only asset source; installed add-ons use the platform adapter. */
+  loadAsset?: (assetId: string) => Promise<Blob>;
   permissions?: Permission[];
+  /** False when a reload superseded the caller while start-up was awaiting. */
+  isCurrent?: () => boolean;
 }
 
 export interface AddonRouteLocation {
@@ -51,6 +68,9 @@ interface Runtime {
   iframe: HTMLIFrameElement;
   code: string;
   files: AddonFile[];
+  assets: Map<string, AddonAsset>;
+  assetLoads: Map<string, Promise<Blob>>;
+  loadAsset: (assetId: string) => Promise<Blob>;
   api: unknown;
   activeContainer?: HTMLElement;
   containerResizeObserver?: ResizeObserver;
@@ -59,6 +79,7 @@ interface Runtime {
     routeId: string;
   };
   isLoaded: boolean;
+  isRuntimeBootstrapping: boolean;
   loadPhase: string;
   lastRenderedRouteKey?: string;
   permissionGuard: PermissionGuard;
@@ -71,7 +92,7 @@ interface Runtime {
   stopPromise?: Promise<void>;
   resolveLoad: (handle: AddonRuntimeHandle) => void;
   rejectLoad: (error: Error) => void;
-  loadTimer: number;
+  loadTimer?: number;
 }
 
 interface SandboxMessage {
@@ -93,31 +114,49 @@ interface SandboxMessage {
   subscriptionId?: string;
   error?: string;
   phase?: string;
+  runtimeProtocolVersion?: number;
+  kind?: string;
+  symbol?: string;
+  assetId?: string;
 }
 
 function createNonce() {
   return crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
 }
 
-function createSandboxUrl(addonId: string, nonce: string, theme: AddonThemeSnapshot) {
+function createAddonLoadCancelledError(addonId: string, reason = "was unloaded before it loaded") {
+  const error = new Error(`Addon '${addonId}' ${reason}`);
+  error.name = "AddonLoadCancelled";
+  return error;
+}
+
+function createSandboxBootstrapParams(
+  addonId: string,
+  nonce: string,
+  theme: AddonThemeSnapshot,
+  localization: AddonLocalizationSnapshot,
+) {
   const basePath = import.meta.env.BASE_URL || "/";
-  const sandboxUrl = new URL(
-    `${basePath.replace(/\/?$/, "/")}addon-sandbox.html`,
-    window.location.href,
-  );
   const params = new URLSearchParams({
     addonId,
     backgroundColor: theme.backgroundColor,
     colorScheme: theme.colorScheme,
     foregroundColor: theme.foregroundColor,
+    hostBaseUrl: new URL(basePath.replace(/\/?$/, "/"), window.location.href).toString(),
+    locale: localization.locale,
     nonce,
     themeClass: theme.themeClass,
   });
   if (theme.fontClass) {
     params.set("fontClass", theme.fontClass);
   }
-  sandboxUrl.hash = params.toString();
-  return sandboxUrl.toString();
+  if (localization.timezone) {
+    params.set("timezone", localization.timezone);
+  }
+  if (localization.uiLocale) {
+    params.set("uiLocale", localization.uiLocale);
+  }
+  return params.toString();
 }
 
 function makeRequestId() {
@@ -186,6 +225,71 @@ function notifyPermissionDenialOnce(addonId: string, method: string | undefined,
   });
 }
 
+// The sandbox reports load/runtime/route-render failures as raw message
+// strings. Left as-is they surface as a blank view or a generic "failed to
+// load" — a class of bug that historically took hours to trace to its real
+// cause (e.g. an addon touching localStorage, which throws in the opaque-origin
+// sandbox). Classify the common signatures into an actionable, human-readable
+// hint so the failure explains itself.
+export function classifyAddonErrorHint(rawMessage: string | undefined): string | undefined {
+  if (!rawMessage) {
+    return undefined;
+  }
+  const message = rawMessage.toLowerCase();
+  // Opaque-origin Web Storage access. Match storage-specific signals, not a
+  // bare "securityerror" — a cross-origin frame/cookie access also throws
+  // SecurityError and must not be mislabelled as a storage problem.
+  if (
+    message.includes("localstorage") ||
+    message.includes("sessionstorage") ||
+    message.includes("allow-same-origin") ||
+    (message.includes("securityerror") && message.includes("storage")) ||
+    (message.includes("sandbox") && message.includes("storage")) ||
+    // WKWebView (Tauri on macOS) reports opaque-origin storage access as a
+    // bare "SecurityError: The operation is insecure." with no storage keyword.
+    message.includes("the operation is insecure")
+  ) {
+    return "This add-on uses browser storage (localStorage/sessionStorage), which is unavailable in the add-on sandbox. Update the add-on to use the storage API.";
+  }
+  if (message.includes("unknown addon host api method")) {
+    return "This add-on called an API this version of Wealthfolio does not provide. Update the add-on, or update Wealthfolio.";
+  }
+  // A contributed route whose id does not match a route the add-on registers
+  // at runtime (contributes.routes[].id must equal router.add({ id })).
+  if (message.includes("route") && message.includes("is not available")) {
+    return "This add-on could not render this page — a declared route id may not match a route the add-on registers. The add-on may need updating.";
+  }
+  return undefined;
+}
+
+// Enrich a raw sandbox error string with its classified hint (for inline
+// display in the route error panel). Returns the original message unchanged
+// when no signature matches.
+function describeAddonError(rawMessage: string | undefined): string {
+  const base = rawMessage || "The add-on view failed to load.";
+  const hint = classifyAddonErrorHint(rawMessage);
+  return hint ? `${base}\n\n${hint}` : base;
+}
+
+// Toast a classified load/runtime error once per addon+signature per session.
+const notifiedRuntimeErrors = new Set<string>();
+
+function notifyClassifiedAddonErrorOnce(addonId: string, rawMessage: string | undefined) {
+  const hint = classifyAddonErrorHint(rawMessage);
+  if (!hint) {
+    return;
+  }
+  const key = `${addonId}:${hint}`;
+  if (notifiedRuntimeErrors.has(key)) {
+    return;
+  }
+  notifiedRuntimeErrors.add(key);
+  toast.error(`Add-on '${addonId}' error`, {
+    description: hint,
+    duration: 15000,
+  });
+}
+
 function getParkingRoot() {
   let root = document.getElementById("addon-sandbox-parking");
   if (!root) {
@@ -196,10 +300,9 @@ function getParkingRoot() {
       overflow: "visible",
       pointerEvents: "none",
       position: "fixed",
-      // index.html gives #root `z-index: 1` (splash-screen layering), which
-      // paints the whole app above z-auto body siblings. Match it so this
-      // later sibling wins the tie and addon frames show above page content,
-      // while staying below dialog/toast portals (z-50+).
+      // #root intentionally has no z-index, so this layer paints above normal
+      // page content while fixed host navigation and portals (z-40+) remain
+      // above the add-on frame.
       zIndex: "1",
     });
     document.body.appendChild(root);
@@ -207,7 +310,9 @@ function getParkingRoot() {
   return root;
 }
 
-const ALLOWED_API_METHODS = new Set([
+// Exported so tests can assert every host-API bridge method is reachable —
+// see the drift check in addons/type-bridge.test.ts.
+export const ALLOWED_API_METHODS = new Set([
   "accounts.getAll",
   "accounts.create",
   "portfolio.getHoldings",
@@ -242,6 +347,13 @@ const ALLOWED_API_METHODS = new Set([
   "exchangeRates.getAll",
   "exchangeRates.update",
   "exchangeRates.add",
+  "exchangeRates.getRatesForDates",
+  "spending.isEnabled",
+  "spending.getCategories",
+  "spending.getRules",
+  "spending.saveRule",
+  "spending.deleteRule",
+  "spending.rerunRules",
   "contributionLimits.getAll",
   "contributionLimits.create",
   "contributionLimits.update",
@@ -271,6 +383,9 @@ const ALLOWED_API_METHODS = new Set([
   "secrets.set",
   "secrets.get",
   "secrets.delete",
+  "storage.get",
+  "storage.set",
+  "storage.delete",
   "toast.success",
   "toast.error",
   "toast.warning",
@@ -335,19 +450,34 @@ export class AddonIframeManager {
   private layoutListening = false;
   private themeObserver?: MutationObserver;
   private themeUpdateFrame?: number;
+  private localizationUnsubscribe?: () => void;
 
   async startAddon(input: StartAddonInput): Promise<AddonRuntimeHandle> {
+    if (input.isCurrent?.() === false) {
+      throw createAddonLoadCancelledError(input.addonId, "load was superseded by a reload");
+    }
     await this.stopAddon(input.addonId);
+    if (input.isCurrent?.() === false) {
+      throw createAddonLoadCancelledError(input.addonId, "load was superseded by a reload");
+    }
     this.ensureListener();
     this.ensureThemeObserver();
+    this.ensureLocalizationListener();
 
     const nonce = createNonce();
     const initialTheme = collectAddonThemeSnapshot();
-    const sandboxUrl = createSandboxUrl(input.addonId, nonce, initialTheme);
+    const initialLocalization = collectAddonLocalizationSnapshot();
+    const sandboxBootstrapParams = createSandboxBootstrapParams(
+      input.addonId,
+      nonce,
+      initialTheme,
+      initialLocalization,
+    );
 
     const iframe = document.createElement("iframe");
     iframe.title = `${input.manifest.name || input.addonId} add-on sandbox`;
     iframe.setAttribute("sandbox", "allow-scripts");
+    iframe.name = sandboxBootstrapParams;
     iframe.referrerPolicy = "no-referrer";
     Object.assign(iframe.style, {
       border: "0",
@@ -368,20 +498,25 @@ export class AddonIframeManager {
       credentiallessFrame.credentialless = true;
     }
 
+    let runtime!: Runtime;
     const loadPromise = new Promise<AddonRuntimeHandle>((resolve, reject) => {
-      const runtime: Runtime = {
+      runtime = {
         addonId: input.addonId,
         api: createAddonHostAPI(input.addonId, input.permissions),
+        assets: new Map((input.assets ?? []).map((asset) => [asset.id, asset])),
+        assetLoads: new Map(),
         code: input.code,
         files: input.files ?? [],
         iframe,
         isLoaded: false,
+        isRuntimeBootstrapping: false,
         loadPhase: "creating sandbox iframe",
-        loadTimer: window.setTimeout(() => {
-          const phase = this.runtimes.get(input.addonId)?.loadPhase ?? "unknown";
-          reject(new Error(`Timed out loading addon '${input.addonId}' during ${phase}`));
-          void this.stopAddon(input.addonId);
-        }, LOAD_TIMEOUT_MS),
+        loadAsset:
+          input.loadAsset ??
+          ((assetId) => {
+            const asset = runtime.assets.get(assetId);
+            return loadAddonAsset(input.addonId, assetId, asset?.mimeType);
+          }),
         nonce,
         permissionGuard: createPermissionGuard(input.addonId, input.permissions),
         rejectLoad: reject,
@@ -391,31 +526,61 @@ export class AddonIframeManager {
       };
       this.runtimes.set(input.addonId, runtime);
     });
+    this.armLoadTimeout(runtime, BOOTSTRAP_TIMEOUT_MS);
 
     getParkingRoot().appendChild(iframe);
-    const runtime = this.runtimes.get(input.addonId);
-    if (runtime) {
-      runtime.loadPhase = "loading sandbox document";
-    }
+    runtime.loadPhase = "loading sandbox document";
     iframe.addEventListener(
       "error",
       () => {
-        const runtime = this.runtimes.get(input.addonId);
+        if (this.runtimes.get(input.addonId) !== runtime) {
+          return;
+        }
         // Rejecting is enough: the load-error path in addons-core surfaces a
         // user-facing toast, so no extra notification here.
-        runtime?.rejectLoad(new Error(`Failed to load add-on sandbox for '${input.addonId}'`));
-        void this.stopAddon(input.addonId);
+        runtime.rejectLoad(new Error(`Failed to load add-on sandbox for '${input.addonId}'`));
+        void this.stopRuntimeIfCurrent(runtime);
       },
       { once: true },
     );
-    iframe.src = sandboxUrl;
+    iframe.srcdoc = addonSandboxDocument;
 
-    return loadPromise.finally(() => {
-      const runtime = this.runtimes.get(input.addonId);
-      if (runtime) {
-        clearTimeout(runtime.loadTimer);
+    try {
+      const handle = await loadPromise;
+      if (input.isCurrent?.() === false) {
+        await this.stopRuntimeIfCurrent(runtime);
+        throw createAddonLoadCancelledError(input.addonId, "load was superseded by a reload");
       }
-    });
+      return handle;
+    } finally {
+      this.clearLoadTimeout(runtime);
+    }
+  }
+
+  private armLoadTimeout(runtime: Runtime, timeoutMs: number) {
+    this.clearLoadTimeout(runtime);
+    runtime.loadTimer = window.setTimeout(() => {
+      runtime.loadTimer = undefined;
+      if (this.runtimes.get(runtime.addonId) !== runtime) {
+        return;
+      }
+      const phase = runtime.loadPhase;
+      runtime.rejectLoad(new Error(`Timed out loading addon '${runtime.addonId}' during ${phase}`));
+      void this.stopRuntimeIfCurrent(runtime);
+    }, timeoutMs);
+  }
+
+  private clearLoadTimeout(runtime: Runtime) {
+    if (runtime.loadTimer === undefined) {
+      return;
+    }
+    clearTimeout(runtime.loadTimer);
+    runtime.loadTimer = undefined;
+  }
+
+  /** Whether an addon's iframe runtime has been booted (used by the activation coordinator). */
+  hasRuntime(addonId: string): boolean {
+    return this.runtimes.has(addonId);
   }
 
   getRouteStatus(
@@ -505,20 +670,30 @@ export class AddonIframeManager {
       clearAddonRegistrations(addonId);
       return;
     }
+    await this.stopRuntimeIfCurrent(runtime);
+  }
+
+  async stopAllAddons() {
+    await Promise.all(
+      Array.from(this.runtimes.values(), (runtime) => this.stopRuntimeIfCurrent(runtime)),
+    );
+  }
+
+  private async stopRuntimeIfCurrent(runtime: Runtime) {
+    if (this.runtimes.get(runtime.addonId) !== runtime) {
+      return;
+    }
     runtime.stopPromise ??= this.stopRuntime(runtime);
     await runtime.stopPromise;
   }
 
   private async stopRuntime(runtime: Runtime) {
-    clearTimeout(runtime.loadTimer);
+    this.clearLoadTimeout(runtime);
     runtime.activeRouteRequestId = undefined;
     clearPendingRouteRender(runtime);
-    const cancellation = new Error(
-      `Addon '${runtime.addonId}' was unloaded before it finished loading`,
-    );
+    const cancellation = createAddonLoadCancelledError(runtime.addonId);
     // Marks deliberate cancellation (stop/reload) so load-error reporting can
     // distinguish it from a real failure.
-    cancellation.name = "AddonLoadCancelled";
     runtime.rejectLoad(cancellation);
 
     const disabled = runtime.isLoaded ? this.waitForDisable(runtime) : Promise.resolve(true);
@@ -528,14 +703,18 @@ export class AddonIframeManager {
     }
 
     await this.clearSubscriptions(runtime);
+    runtime.assetLoads.clear();
     runtime.containerResizeObserver?.disconnect();
     runtime.containerResizeObserver = undefined;
     this.hideFrame(runtime);
     runtime.iframe.remove();
-    this.runtimes.delete(runtime.addonId);
-    clearAddonRegistrations(runtime.addonId);
+    if (this.runtimes.get(runtime.addonId) === runtime) {
+      this.runtimes.delete(runtime.addonId);
+      clearAddonRegistrations(runtime.addonId);
+    }
     this.stopLayoutListenerIfIdle();
     this.stopThemeObserverIfIdle();
+    this.stopLocalizationListenerIfIdle();
   }
 
   private waitForDisable(runtime: Runtime) {
@@ -583,6 +762,8 @@ export class AddonIframeManager {
     }
     window.addEventListener("resize", this.scheduleFrameLayoutUpdate);
     window.addEventListener("scroll", this.scheduleFrameLayoutUpdate, true);
+    window.visualViewport?.addEventListener("resize", this.scheduleFrameLayoutUpdate);
+    window.visualViewport?.addEventListener("scroll", this.scheduleFrameLayoutUpdate);
     this.layoutListening = true;
   }
 
@@ -595,6 +776,8 @@ export class AddonIframeManager {
     }
     window.removeEventListener("resize", this.scheduleFrameLayoutUpdate);
     window.removeEventListener("scroll", this.scheduleFrameLayoutUpdate, true);
+    window.visualViewport?.removeEventListener("resize", this.scheduleFrameLayoutUpdate);
+    window.visualViewport?.removeEventListener("scroll", this.scheduleFrameLayoutUpdate);
     this.layoutListening = false;
     if (this.frameLayoutUpdateFrame) {
       cancelAnimationFrame(this.frameLayoutUpdateFrame);
@@ -627,6 +810,14 @@ export class AddonIframeManager {
       visibility: "hidden",
       width: "0",
     });
+  }
+
+  private hideFailedRoute(runtime: Runtime) {
+    // A warm render failure otherwise leaves the previously rendered iframe
+    // above the host's error panel. Drop the warm-content marker so Retry uses
+    // the cold-loading path and keep the frame non-interactive until success.
+    runtime.lastRenderedRouteKey = undefined;
+    this.hideFrame(runtime);
   }
 
   private updateFrameBounds(runtime: Runtime) {
@@ -678,42 +869,65 @@ export class AddonIframeManager {
   private async dispatchMessage(runtime: Runtime, message: SandboxMessage) {
     try {
       switch (message.type) {
+        case "bootstrapReady":
+          await this.handleBootstrapReady(runtime);
+          break;
         case "loadPhase":
           if (message.phase) {
             runtime.loadPhase = message.phase;
           }
           break;
-        case "ready":
-          runtime.loadPhase = "sandbox ready";
+        case "ready": {
+          runtime.isRuntimeBootstrapping = false;
+          if (message.runtimeProtocolVersion !== ADDON_SANDBOX_RUNTIME_PROTOCOL_VERSION) {
+            const received = message.runtimeProtocolVersion ?? "missing";
+            const error = new Error(
+              `Incompatible sandbox runtime protocol for addon '${runtime.addonId}': expected ${ADDON_SANDBOX_RUNTIME_PROTOCOL_VERSION}, received ${received}`,
+            );
+            runtime.rejectLoad(error);
+            await this.stopRuntimeIfCurrent(runtime);
+            break;
+          }
+          runtime.loadPhase = "runtime ready";
+          this.armLoadTimeout(runtime, LOAD_TIMEOUT_MS);
           await this.resetRuntimeForReload(runtime);
           runtime.loadPhase = "host sent addon code";
           this.post(runtime, "loadAddon", {
+            assets: Array.from(runtime.assets.values()),
             code: runtime.code,
             files: runtime.files,
+            localization: collectAddonLocalizationSnapshot(),
             theme: collectAddonThemeSnapshot(),
           });
           break;
+        }
         case "loaded":
+          this.clearLoadTimeout(runtime);
           runtime.isLoaded = true;
           runtime.loadPhase = "loaded";
           runtime.resolveLoad({
-            disable: () => this.stopAddon(runtime.addonId),
+            disable: () => this.stopRuntimeIfCurrent(runtime),
           });
           this.renderActiveRoute(runtime);
           break;
         case "loadError": {
+          runtime.isRuntimeBootstrapping = false;
+          const reportedError = message.error || `Failed to load addon '${runtime.addonId}'`;
+          const detailedError = message.phase
+            ? `Sandbox failed during ${message.phase}: ${reportedError}`
+            : reportedError;
           // Log unconditionally: on a sandbox reload the load promise has
           // already settled, so rejectLoad is a no-op and this would
           // otherwise be silent.
-          logger.error(`Addon '${runtime.addonId}' failed to load: ${message.error || "unknown"}`);
-          runtime.rejectLoad(
-            new Error(message.error || `Failed to load addon '${runtime.addonId}'`),
-          );
+          logger.error(`Addon '${runtime.addonId}' failed to load: ${detailedError}`);
+          notifyClassifiedAddonErrorOnce(runtime.addonId, detailedError);
+          runtime.rejectLoad(new Error(detailedError));
           await this.stopAddon(runtime.addonId);
           break;
         }
         case "runtimeError":
           logger.error(`Addon '${runtime.addonId}' runtime error: ${message.error || "unknown"}`);
+          notifyClassifiedAddonErrorOnce(runtime.addonId, message.error);
           break;
         case "disabled":
           runtime.disableAck?.();
@@ -733,6 +947,12 @@ export class AddonIframeManager {
           break;
         case "eventUnsubscribe":
           await this.handleEventUnsubscribe(runtime, message);
+          break;
+        case "hostAssetRequest":
+          await this.handleHostAssetRequest(runtime, message);
+          break;
+        case "addonAssetRequest":
+          await this.handleAddonAssetRequest(runtime, message);
           break;
         case "sidebar.addItem":
           this.handleSidebarAdd(runtime, message);
@@ -757,6 +977,79 @@ export class AddonIframeManager {
       if (message.requestId) {
         this.respond(runtime, message.requestId, false, undefined, error);
       }
+    }
+  }
+
+  private async handleBootstrapReady(runtime: Runtime) {
+    if (runtime.isRuntimeBootstrapping) {
+      return;
+    }
+
+    runtime.isRuntimeBootstrapping = true;
+    runtime.loadPhase = "fetching sandbox runtime assets";
+    try {
+      const assets = await loadAddonSandboxRuntimeAssets();
+      if (this.runtimes.get(runtime.addonId) !== runtime) {
+        return;
+      }
+      runtime.loadPhase = "sending sandbox runtime assets";
+      this.post(runtime, "loadRuntime", {
+        protocolVersion: ADDON_SANDBOX_RUNTIME_PROTOCOL_VERSION,
+        script: assets.script,
+        stylesheet: assets.stylesheet,
+      });
+    } catch (error) {
+      runtime.isRuntimeBootstrapping = false;
+      const detail = formatUnknownError(error) ?? "unknown error";
+      const unavailable = new Error(
+        `Sandbox runtime unavailable for addon '${runtime.addonId}': ${detail}`,
+      );
+      runtime.rejectLoad(unavailable);
+      await this.stopRuntimeIfCurrent(runtime);
+    }
+  }
+
+  private async handleHostAssetRequest(runtime: Runtime, message: SandboxMessage) {
+    if (!message.requestId) {
+      return;
+    }
+    if (message.kind !== "tickerLogo") {
+      this.respond(runtime, message.requestId, true, null);
+      return;
+    }
+
+    const logo = await tickerLogoAssetBridge.load(message.symbol);
+    this.respond(runtime, message.requestId, true, logo);
+  }
+
+  private async handleAddonAssetRequest(runtime: Runtime, message: SandboxMessage) {
+    if (!message.requestId || !message.assetId) {
+      return;
+    }
+    const descriptor = runtime.assets.get(message.assetId);
+    if (!descriptor) {
+      throw new Error("Packaged addon asset is not registered for this addon");
+    }
+
+    let assetLoad = runtime.assetLoads.get(descriptor.id);
+    if (!assetLoad) {
+      assetLoad = runtime.loadAsset(descriptor.id).then((blob) => {
+        if (blob.size !== descriptor.size) {
+          throw new Error(`Packaged addon asset '${descriptor.path}' changed while loading`);
+        }
+        return blob.type === descriptor.mimeType
+          ? blob
+          : blob.slice(0, blob.size, descriptor.mimeType);
+      });
+      runtime.assetLoads.set(descriptor.id, assetLoad);
+    }
+    try {
+      this.respond(runtime, message.requestId, true, await assetLoad);
+    } catch (error) {
+      if (runtime.assetLoads.get(descriptor.id) === assetLoad) {
+        runtime.assetLoads.delete(descriptor.id);
+      }
+      throw error;
     }
   }
 
@@ -799,7 +1092,6 @@ export class AddonIframeManager {
     if (!message.requestId || !message.item) {
       return;
     }
-    runtime.permissionGuard.assertCanUse("ui", "sidebar.addItem");
     registerAddonNavItem(runtime.addonId, message.item);
     this.respond(runtime, message.requestId, true, undefined);
   }
@@ -816,7 +1108,6 @@ export class AddonIframeManager {
     if (!message.requestId || !message.route?.path || !message.route.routeId) {
       return;
     }
-    runtime.permissionGuard.assertCanUse("ui", "router.add");
     registerAddonRoute(runtime.addonId, {
       path: message.route.path,
       routeId: message.route.routeId,
@@ -859,9 +1150,12 @@ export class AddonIframeManager {
     const routeKey = route ? createRouteRenderKey(route.routeId, route.location) : undefined;
     runtime.activeRouteRequestId = undefined;
     clearPendingRouteRender(runtime);
-    runtime.iframe.style.visibility = runtime.lastRenderedRouteKey ? "visible" : "hidden";
+    this.hideFailedRoute(runtime);
+    notifyClassifiedAddonErrorOnce(runtime.addonId, message.error);
     this.emitRouteStatus(runtime, {
-      error: message.error || `Failed to render add-on route '${route?.routeId ?? "unknown"}'`,
+      error: describeAddonError(
+        message.error || `Failed to render add-on route '${route?.routeId ?? "unknown"}'`,
+      ),
       routeKey,
       status: "error",
     });
@@ -948,6 +1242,22 @@ export class AddonIframeManager {
     }
   }
 
+  private ensureLocalizationListener() {
+    this.localizationUnsubscribe ??= subscribeToAddonLocalization((localization) => {
+      for (const runtime of this.runtimes.values()) {
+        this.post(runtime, "localizationUpdate", { localization });
+      }
+    });
+  }
+
+  private stopLocalizationListenerIfIdle() {
+    if (this.runtimes.size > 0) {
+      return;
+    }
+    this.localizationUnsubscribe?.();
+    this.localizationUnsubscribe = undefined;
+  }
+
   private renderActiveRoute(runtime: Runtime) {
     if (!runtime.isLoaded || !runtime.activeContainer || !runtime.activeRoute) {
       return;
@@ -986,8 +1296,7 @@ export class AddonIframeManager {
       }
       runtime.activeRouteRequestId = undefined;
       clearPendingRouteRender(runtime);
-      runtime.iframe.style.visibility = runtime.lastRenderedRouteKey ? "visible" : "hidden";
-      this.updateFrameBounds(runtime);
+      this.hideFailedRoute(runtime);
       this.emitRouteStatus(runtime, {
         error: `Timed out rendering add-on route '${route.routeId}'`,
         routeKey,

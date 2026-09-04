@@ -17,6 +17,24 @@
   "dataGrid": {
     "label": "Data grid",
     "addRow": "Add row",
+    "sortAsc": "Sort asc",
+    "sortDesc": "Sort desc",
+    "removeSort": "Remove sort",
+    "pinToLeft": "Pin to left",
+    "unpinFromLeft": "Unpin from left",
+    "pinToRight": "Pin to right",
+    "unpinFromRight": "Unpin from right",
+    "hideColumn": "Hide column",
+    "resizeColumn": "Resize {{label}} column",
+    "variantShortText": "Short text",
+    "variantLongText": "Long text",
+    "variantNumber": "Number",
+    "variantUrl": "URL",
+    "variantCheckbox": "Checkbox",
+    "variantSelect": "Select",
+    "variantMultiSelect": "Multi-select",
+    "variantDate": "Date",
+    "variantFile": "File",
     "copy": "Copy",
     "cut": "Cut",
     "clear": "Clear",
@@ -81,7 +99,13 @@
   },
   "datePicker": {
     "dateLabel": "Date",
-    "pick": "Pick a date"
+    "pick": "Pick a date",
+    "previousMonth": "Previous month",
+    "nextMonth": "Next month",
+    "chooseMonth": "Choose month",
+    "chooseYear": "Choose year",
+    "previousYear": "Previous year",
+    "nextYear": "Next year"
   },
   "dateRange": {
     "pick": "Pick a date range",
@@ -140,7 +164,18 @@
     "YTD": "year to date",
     "1Y": "past year",
     "5Y": "past 5 years",
-    "ALL": "All Time"
+    "ALL": "All Time",
+    "label": {
+      "1D": "1D",
+      "1W": "1W",
+      "1M": "1M",
+      "3M": "3M",
+      "6M": "6M",
+      "YTD": "YTD",
+      "1Y": "1Y",
+      "5Y": "5Y",
+      "ALL": "ALL"
+    }
   },
   "search": {
     "clear": "Clear search",

@@ -1,12 +1,11 @@
 import { useSettings } from "@/hooks/use-settings";
 import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
-import { roundDecimal } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Label } from "@wealthfolio/ui/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@wealthfolio/ui/components/ui/radio-group";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { z } from "zod";
@@ -23,6 +22,7 @@ import {
   SymbolSearch,
   type AccountSelectOption,
 } from "./fields";
+import { calculateIncomeFinalAmount } from "@/lib/activity-final-amount";
 
 // Non-UI sentinel for the "cash" income mode (not a DB value; internal only).
 const INCOME_MODE_CASH = "CASH";
@@ -50,8 +50,8 @@ export const createInterestFormSchema = (t?: TFunction) =>
           required_error: msg(t, "activity:form.err_enter_amount", "Please enter an amount."),
           invalid_type_error: msg(t, "activity:form.err_amount_number", "Amount must be a number."),
         })
-        .positive({
-          message: msg(t, "activity:form.err_amount_gt_zero", "Amount must be greater than 0."),
+        .min(0, {
+          message: msg(t, "activity:form.err_amount_non_negative", "Amount must be non-negative."),
         }),
       tax: z.coerce
         .number({
@@ -69,6 +69,9 @@ export const createInterestFormSchema = (t?: TFunction) =>
           ),
         })
         .default(0),
+      // Positivity for unitPrice/quantity is enforced in superRefine, only for
+      // the staking-reward subtype: cash records persist 0 for these hidden
+      // fields, and a top-level .positive() would reject editing them.
       unitPrice: z.coerce
         .number({
           invalid_type_error: msg(
@@ -77,9 +80,6 @@ export const createInterestFormSchema = (t?: TFunction) =>
             "FMV per unit must be a number.",
           ),
         })
-        .positive({
-          message: msg(t, "activity:form.err_fmv_gt_zero", "FMV per unit must be greater than 0."),
-        })
         .optional(),
       quantity: z.coerce
         .number({
@@ -87,13 +87,6 @@ export const createInterestFormSchema = (t?: TFunction) =>
             t,
             "activity:form.err_received_quantity_number",
             "Received quantity must be a number.",
-          ),
-        })
-        .positive({
-          message: msg(
-            t,
-            "activity:form.err_received_quantity_gt_zero",
-            "Received quantity must be greater than 0.",
           ),
         })
         .optional(),
@@ -139,6 +132,16 @@ export const createInterestFormSchema = (t?: TFunction) =>
             "Received quantity is required.",
           ),
         });
+      } else if (data.quantity < 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["quantity"],
+          message: msg(
+            t,
+            "activity:form.err_received_quantity_gt_zero",
+            "Received quantity must be greater than 0.",
+          ),
+        });
       }
       if (!data.unitPrice) {
         if (data.amount) return;
@@ -150,6 +153,12 @@ export const createInterestFormSchema = (t?: TFunction) =>
             "activity:form.err_enter_interest_or_fmv",
             "Enter either interest amount or FMV per unit.",
           ),
+        });
+      } else if (data.unitPrice < 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["unitPrice"],
+          message: msg(t, "activity:form.err_fmv_gt_zero", "FMV per unit must be greater than 0."),
         });
       }
     });
@@ -215,6 +224,7 @@ export function InterestForm({
   const subtype = watch("subtype");
   const quantity = watch("quantity");
   const unitPrice = watch("unitPrice");
+  const amountWasEdited = useRef(false);
   const isStakingReward = subtype === ACTIVITY_SUBTYPES.STAKING_REWARD;
   const interestMode = subtype ?? INCOME_MODE_CASH;
 
@@ -222,13 +232,21 @@ export function InterestForm({
     if (!isStakingReward) return;
     const q = Number(quantity);
     const p = Number(unitPrice);
+    if (amountWasEdited.current) return;
+    const computedAmount = calculateIncomeFinalAmount(
+      quantity,
+      unitPrice,
+      getValues("symbolInstrumentType"),
+    );
+    if (computedAmount === undefined) return;
     const currentAmount = Number(getValues("amount"));
     const quantityIsDirty = getFieldState("quantity").isDirty;
     const unitPriceIsDirty = getFieldState("unitPrice").isDirty;
     const shouldAutoSetAmount =
-      quantityIsDirty || unitPriceIsDirty || !(Number.isFinite(currentAmount) && currentAmount > 0);
+      quantityIsDirty ||
+      unitPriceIsDirty ||
+      !(Number.isFinite(currentAmount) && currentAmount >= 0);
     if (q > 0 && p > 0 && shouldAutoSetAmount) {
-      const computedAmount = roundDecimal(q * p);
       if (currentAmount !== computedAmount) {
         setValue("amount", computedAmount, {
           shouldDirty: quantityIsDirty || unitPriceIsDirty,
@@ -343,6 +361,9 @@ export function InterestForm({
                   : t("activity:form.label_amount")
               }
               currency={currency}
+              onValueChange={() => {
+                amountWasEdited.current = true;
+              }}
             />
             <AmountInput
               name="tax"

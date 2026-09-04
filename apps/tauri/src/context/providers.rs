@@ -12,8 +12,9 @@ use wealthfolio_connect::{
 };
 use wealthfolio_core::{
     accounts::AccountService,
-    activities::ActivityService,
-    assets::{AlternativeAssetService, AssetClassificationService, AssetService},
+    activities::{rebuild_pending_final_cash_accounts, run_final_cash_migration, ActivityService},
+    addons::AddonService,
+    assets::{AlternativeAssetService, AssetClassificationService, AssetLogoService, AssetService},
     events::DomainEvent,
     fx::{FxService, FxServiceTrait},
     goals::GoalService,
@@ -26,6 +27,7 @@ use wealthfolio_core::{
         income::IncomeService,
         net_worth::NetWorthService,
         performance::PerformanceService,
+        recalculation_gate::PortfolioRecalculationGate,
         snapshot::SnapshotService,
         valuation::ValuationService,
     },
@@ -38,9 +40,10 @@ use wealthfolio_device_sync::{engine::DeviceSyncRuntimeState, DeviceEnrollServic
 use wealthfolio_storage_sqlite::{
     accounts::AccountRepository,
     activities::ActivityRepository,
+    addons::AddonStorageRepository,
     agent::{McpAuditRepository, PatRepository},
     ai_chat::AiChatRepository,
-    assets::{AlternativeAssetRepository, AssetRepository},
+    assets::{AlternativeAssetRepository, AssetLogoRepository, AssetRepository},
     db::{self, write_actor},
     fx::FxRepository,
     goals::GoalRepository,
@@ -172,7 +175,11 @@ pub async fn initialize_context(
     let base_currency_string = settings.base_currency.clone();
     let base_currency = Arc::new(RwLock::new(base_currency_string.clone()));
     let timezone = Arc::new(RwLock::new(settings.timezone.clone()));
-    let instance_id = Arc::new(settings.instance_id.clone());
+    let rating_instance_id = Arc::new(
+        settings_service
+            .get_setting_value("instance_id")?
+            .ok_or_else(|| std::io::Error::other("Missing internal instance ID"))?,
+    );
 
     let secret_store = shared_secret_store();
 
@@ -274,6 +281,7 @@ pub async fn initialize_context(
             activity_splits_repo.clone(),
             activity_events_repo.clone(),
             events_service.clone(),
+            fx_service.clone(),
         ),
     );
 
@@ -370,8 +378,19 @@ pub async fn initialize_context(
             quote_service.clone(),
             core_import_run_repository,
         )
+        .with_timezone(timezone.clone())
         .with_event_sink(domain_event_sink.clone()),
     );
+    let final_cash_migration = run_final_cash_migration(
+        settings_service.as_ref(),
+        activity_repository.as_ref(),
+        account_service.as_ref(),
+        asset_service.as_ref(),
+    )
+    .await?;
+    let recalculation_gate = Arc::new(PortfolioRecalculationGate::new(
+        final_cash_migration.pending_account_ids.clone(),
+    ));
     let goal_service = Arc::new(GoalService::new(goal_repo.clone(), account_service.clone()));
     let limits_service = Arc::new(ContributionLimitService::new_with_timezone(
         fx_service.clone(),
@@ -398,7 +417,8 @@ pub async fn initialize_context(
             fx_service.clone(),
         )
         .with_event_sink(domain_event_sink.clone())
-        .with_lot_repository(lots_repository.clone()),
+        .with_lot_repository(lots_repository.clone())
+        .with_recalculation_gate(recalculation_gate.clone()),
     );
 
     let holdings_valuation_service = Arc::new(HoldingsValuationService::new_with_timezone(
@@ -416,8 +436,35 @@ pub async fn initialize_context(
             fx_service.clone(),
         )
         .with_activity_repository(activity_repository.clone(), timezone.clone())
-        .with_lot_repository(lots_repository.clone()),
+        .with_lot_repository(lots_repository.clone())
+        .with_recalculation_gate(recalculation_gate.clone()),
     );
+
+    if !final_cash_migration.pending_account_ids.is_empty() {
+        // The recalculation gate already serializes and forces full
+        // recomputation for pending accounts, so the rebuild can always run
+        // in the background instead of blocking (or failing) startup.
+        log::info!(
+            "Rebuilding {} account(s) after final-cash migration in the background",
+            final_cash_migration.pending_account_ids.len()
+        );
+        let settings_service = settings_service.clone();
+        let snapshot_service = snapshot_service.clone();
+        let valuation_service = valuation_service.clone();
+        let recalculation_gate = recalculation_gate.clone();
+        tokio::spawn(async move {
+            if let Err(error) = rebuild_pending_final_cash_accounts(
+                settings_service.as_ref(),
+                snapshot_service.as_ref(),
+                valuation_service.as_ref(),
+                recalculation_gate.as_ref(),
+            )
+            .await
+            {
+                log::warn!("Background final-cash rebuild failed: {}", error);
+            }
+        });
+    }
 
     let performance_service = Arc::new(
         PerformanceService::new_with_timezone(
@@ -495,6 +542,12 @@ pub async fn initialize_context(
         .with_event_sink(domain_event_sink.clone()),
     );
 
+    let asset_logo_repository = Arc::new(AssetLogoRepository::new(pool.clone(), writer.clone()));
+    let asset_logo_service = Arc::new(AssetLogoService::new(
+        asset_logo_repository,
+        asset_repository.clone(),
+    ));
+
     let sync_service = Arc::new(
         BrokerSyncService::new(
             account_service.clone(),
@@ -507,6 +560,7 @@ pub async fn initialize_context(
             snapshot_repository.clone(),
         )
         .with_event_sink(domain_event_sink.clone())
+        .with_timezone(timezone.clone())
         .with_snapshot_service(snapshot_service.clone())
         .with_quote_store(market_data_repo.clone()),
     );
@@ -564,6 +618,15 @@ pub async fn initialize_context(
     // Personal Access Token repository (per-client scoped MCP auth)
     let pat_repository = Arc::new(PatRepository::new(pool.clone(), writer.clone()));
 
+    // Durable per-addon key-value storage repository
+    let addon_storage_repository: Arc<dyn wealthfolio_core::addons::AddonStorageRepositoryTrait> =
+        Arc::new(AddonStorageRepository::new(pool.clone(), writer.clone()));
+    let addon_service = Arc::new(AddonService::new(
+        app_data_dir,
+        rating_instance_id.as_str(),
+        addon_storage_repository.clone(),
+    ));
+
     // Device enroll service for E2EE sync
     let cloud_api_url = crate::services::cloud_api_base_url().unwrap_or_default();
     let device_display_name = get_device_display_name();
@@ -591,7 +654,7 @@ pub async fn initialize_context(
         context: ServiceContext {
             base_currency,
             timezone,
-            instance_id,
+            rating_instance_id,
             domain_event_sink,
             settings_service,
             account_service,
@@ -616,6 +679,7 @@ pub async fn initialize_context(
             net_worth_service,
             sync_service,
             alternative_asset_service,
+            asset_logo_service,
             taxonomy_service,
             connect_service,
             ai_provider_service,
@@ -623,6 +687,7 @@ pub async fn initialize_context(
             agent_environment,
             mcp_audit_repository,
             pat_repository,
+            addon_service,
             device_enroll_service,
             device_sync_runtime,
             broker_sync_running,
