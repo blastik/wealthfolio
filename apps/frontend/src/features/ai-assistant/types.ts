@@ -482,6 +482,7 @@ export interface RecordActivitiesDraft {
   unitPrice?: number;
   amount?: number;
   fee?: number;
+  tax?: number;
   currency: string;
   accountId?: string;
   accountName?: string;
