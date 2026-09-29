@@ -786,6 +786,7 @@ export interface AssetClassificationResolvedAsset {
   symbol?: string | null;
   name?: string | null;
   exchangeMic?: string | null;
+  instrumentType?: string | null;
   currency: string;
   matchedBy: string;
 }

@@ -215,6 +215,8 @@ function ActivityDateListItem({
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <TickerAvatar
           symbol={avatarSymbol}
+          exchangeMic={activity.exchangeMic}
+          instrumentType={activity.instrumentType}
           assetId={activity.assetId}
           className="h-10 w-10 flex-shrink-0"
         />
@@ -443,10 +445,13 @@ function getActivityTone(type: ActivityType) {
     case ActivityType.BUY:
     case ActivityType.DEPOSIT:
     case ActivityType.TRANSFER_IN:
+      return {
+        text: "text-success",
+      };
     case ActivityType.DIVIDEND:
     case ActivityType.INTEREST:
       return {
-        text: "text-success",
+        text: "text-info",
       };
     case ActivityType.SELL:
     case ActivityType.WITHDRAWAL:
