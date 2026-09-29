@@ -7,14 +7,14 @@ import { PERIOD_STEP, shiftPeriodAnchor, type TimePeriod } from "@wealthfolio/ui
  * "now" the user has paged for the given period `code`, resetting to the
  * current window whenever `code` changes (picking a new period pill).
  */
-export function usePeriodOffset(code: TimePeriod) {
+export function usePeriodOffset(code: TimePeriod, today: Date = new Date()) {
   const [offset, setOffset] = useState(0);
 
   useEffect(() => {
     setOffset(0);
   }, [code]);
 
-  const anchor = useMemo(() => shiftPeriodAnchor(code, offset), [code, offset]);
+  const anchor = useMemo(() => shiftPeriodAnchor(code, offset, today), [code, offset, today]);
   // Periods like "All time" have no meaningful prior window.
   const canStepBackward = PERIOD_STEP[code] !== null;
 

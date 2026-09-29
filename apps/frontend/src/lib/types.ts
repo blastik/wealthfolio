@@ -544,9 +544,14 @@ export interface ResolvedQuote {
 
 export interface ExchangeInfo {
   mic: string;
+  operatingMic: string;
+  micType: "OPRT" | "SGMT";
   name: string;
   longName: string;
-  currency: string;
+  countryCode: string;
+  status: "ACTIVE" | "UPDATED";
+  currency?: string | null;
+  configured: boolean;
 }
 
 export interface MarketDataProviderInfo {
@@ -754,6 +759,8 @@ export interface HoldingSummary {
   id: string;
   symbol: string;
   name?: string | null;
+  exchangeMic?: string | null;
+  instrumentType?: string | null;
   accountName?: string | null;
   holdingType: HoldingType;
   quantity: number;
@@ -883,6 +890,9 @@ export interface QuoteUpdate {
 }
 
 export interface Settings {
+  insightsOverviewLayout?: Record<string, unknown> | null;
+  /** Read-only restore state, absent on older backends. */
+  restoreReconnectRequired?: boolean;
   theme: string;
   font: string;
   language: string;
@@ -1055,7 +1065,8 @@ export interface AccountValuation {
     | "ACTIVITY_DERIVED"
     | "STORED_GROSS"
     | "NET_CONTRIBUTION_FALLBACK"
-    | "MIXED";
+    | "MIXED"
+    | "MIXED_EXACT";
   performanceEligibleValueBase: number;
   valueStatus: ValuationStatus;
   basisStatus: BasisStatus;
@@ -2477,6 +2488,8 @@ export interface RetirementOverview {
   portfolioAtGoalAge: number;
   requiredCapitalReachable: boolean;
   requiredCapitalAtGoalAge: number;
+  leanRequiredCapitalAtGoalAge?: number | null;
+  fatRequiredCapitalAtGoalAge?: number | null;
   shortfallAtGoalAge: number;
   surplusAtGoalAge: number;
   fundedThroughAge: number | null;
@@ -2717,6 +2730,8 @@ export interface DriftHoldingRow {
   sourceAccountIds?: string[];
   symbol: string;
   name: string;
+  exchangeMic?: string | null;
+  instrumentType?: string | null;
   categoryId: string;
   categoryName: string;
   categoryColor?: string | null;
