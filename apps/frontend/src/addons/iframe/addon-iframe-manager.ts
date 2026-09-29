@@ -117,6 +117,8 @@ interface SandboxMessage {
   runtimeProtocolVersion?: number;
   kind?: string;
   symbol?: string;
+  exchangeMic?: string;
+  instrumentType?: string;
   assetId?: string;
 }
 
@@ -331,6 +333,11 @@ export const ALLOWED_API_METHODS = new Set([
   "activities.checkImport",
   "activities.getImportMapping",
   "activities.saveImportMapping",
+  "activities.getTransferPair",
+  "activities.findTransferMatchCandidates",
+  "activities.saveTransferPair",
+  "activities.linkTransfer",
+  "activities.unlinkTransfer",
   "market.searchTicker",
   "market.syncHistory",
   "market.sync",
@@ -339,6 +346,7 @@ export const ALLOWED_API_METHODS = new Set([
   "assets.getProfile",
   "assets.updateProfile",
   "assets.updateQuoteMode",
+  "alternativeAssets.getAll",
   "quotes.update",
   "quotes.getHistory",
   "performance.calculateHistory",
@@ -349,6 +357,8 @@ export const ALLOWED_API_METHODS = new Set([
   "exchangeRates.add",
   "exchangeRates.getRatesForDates",
   "spending.isEnabled",
+  "spending.searchCashActivities",
+  "spending.getReport",
   "spending.getCategories",
   "spending.getRules",
   "spending.saveRule",
@@ -1018,7 +1028,11 @@ export class AddonIframeManager {
       return;
     }
 
-    const logo = await tickerLogoAssetBridge.load(message.symbol);
+    const logo = await tickerLogoAssetBridge.load(
+      message.symbol,
+      message.exchangeMic,
+      message.instrumentType,
+    );
     this.respond(runtime, message.requestId, true, logo);
   }
 

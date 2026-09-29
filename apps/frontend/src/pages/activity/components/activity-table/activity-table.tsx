@@ -30,9 +30,10 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  AmountDisplay,
   Button,
   EmptyPlaceholder,
-  useAmountFormatting,
+  PriceDisplay,
   useNumberFormatting,
   useDateFormatting,
 } from "@wealthfolio/ui";
@@ -55,6 +56,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { InfiniteScrollTrigger } from "@/components/infinite-scroll-trigger";
+import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
 import { useVirtualScrollContainer } from "@/hooks/use-virtual-scroll-container";
 import { useActivityMutations } from "../../hooks/use-activity-mutations";
 import { ActivityOperations } from "../activity-operations";
@@ -106,17 +108,19 @@ export const ActivityTable = ({
   isFetchingNextPage = false,
   hasLoadMoreError = false,
 }: ActivityTableProps) => {
-  const formatting = useAmountFormatting();
   const numberFormatting = useNumberFormatting();
   const dateFormatting = useDateFormatting();
+  const { isBalanceHidden } = useBalancePrivacy();
   const { t } = useTranslation();
   const { duplicateActivityMutation } = useActivityMutations();
+  // mutateAsync is stable; the mutation object is not, and `columns` depends on this handler.
+  const { mutateAsync: duplicateActivity } = duplicateActivityMutation;
   const { settings } = useSettingsContext();
   const appTimezone = settings?.timezone?.trim() || undefined;
 
   const handleDuplicate = React.useCallback(
-    async (activity: ActivityDetails) => duplicateActivityMutation.mutateAsync(activity),
-    [duplicateActivityMutation],
+    async (activity: ActivityDetails) => duplicateActivity(activity),
+    [duplicateActivity],
   );
 
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({
@@ -197,7 +201,13 @@ export const ActivityTable = ({
 
           const content = (
             <div className="flex max-w-[220px] items-center gap-2">
-              <TickerAvatar symbol={avatarSymbol} assetId={assetId} className="h-8 w-8 shrink-0" />
+              <TickerAvatar
+                symbol={avatarSymbol}
+                exchangeMic={row.original.exchangeMic}
+                instrumentType={row.original.instrumentType}
+                assetId={assetId}
+                className="h-8 w-8 shrink-0"
+              />
               <div className="flex min-w-0 flex-col">
                 <span className="flex items-center gap-1 truncate font-medium">
                   <span className="truncate">{displaySymbol}</span>
@@ -338,7 +348,11 @@ export const ActivityTable = ({
 
           return (
             <div className="pr-4 text-right">
-              {typeof quantity === "number" ? quantity : String(quantity)}
+              {isBalanceHidden
+                ? "••••"
+                : typeof quantity === "number"
+                  ? quantity
+                  : String(quantity)}
             </div>
           );
         },
@@ -388,11 +402,21 @@ export const ActivityTable = ({
             (isIncomeActivity(activityType) && !isAssetBackedIncome)
           ) {
             return (
-              <div className="text-right">{formatting.formatAmount(Number(amount), currency)}</div>
+              <div className="text-right">
+                <AmountDisplay
+                  value={Number(amount)}
+                  currency={currency}
+                  isHidden={isBalanceHidden}
+                />
+              </div>
             );
           }
 
-          return <div className="text-right">{formatting.formatPrice(unitPrice, currency)}</div>;
+          return (
+            <div className="text-right">
+              <PriceDisplay value={unitPrice} currency={currency} isHidden={isBalanceHidden} />
+            </div>
+          );
         },
       },
       {
@@ -421,7 +445,11 @@ export const ActivityTable = ({
 
           return (
             <div className="text-right">
-              {activityType === "SPLIT" ? "-" : formatting.formatAmount(fee, currency)}
+              {activityType === "SPLIT" ? (
+                "-"
+              ) : (
+                <AmountDisplay value={fee} currency={currency} isHidden={isBalanceHidden} />
+              )}
             </div>
           );
         },
@@ -452,7 +480,11 @@ export const ActivityTable = ({
 
           return (
             <div className="text-right">
-              {activityType === "SPLIT" ? "-" : formatting.formatAmount(tax, currency)}
+              {activityType === "SPLIT" ? (
+                "-"
+              ) : (
+                <AmountDisplay value={tax} currency={currency} isHidden={isBalanceHidden} />
+              )}
             </div>
           );
         },
@@ -483,7 +515,9 @@ export const ActivityTable = ({
 
           const displayValue = calculateActivityValue(activity);
           return (
-            <div className="pr-4 text-right">{formatting.formatAmount(displayValue, currency)}</div>
+            <div className="pr-4 text-right">
+              <AmountDisplay value={displayValue} currency={currency} isHidden={isBalanceHidden} />
+            </div>
           );
         },
       },
@@ -602,7 +636,7 @@ export const ActivityTable = ({
     [
       appTimezone,
       dateFormatting,
-      formatting,
+      isBalanceHidden,
       handleEdit,
       handleDelete,
       handleDuplicate,
