@@ -167,7 +167,7 @@ async fn get_transfer_pair_for_activity(
 
 async fn get_exchange_pair_for_activity(
     Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<InternalExchangePairResponse>> {
     let pair = state.activity_service.get_exchange_pair_for_activity(id)?;
     Ok(Json(pair))

@@ -130,10 +130,11 @@ pub async fn get_transfer_pair_for_activity(
 #[tauri::command]
 pub async fn get_exchange_pair_for_activity(
     activity_id: String,
-    state: State<'_, Arc<ServiceContext>>,
+    state: ProfileAccess,
 ) -> Result<InternalExchangePairResponse, String> {
+    let context = state.context()?;
     debug!("Getting exchange pair...");
-    state
+    context
         .activity_service()
         .get_exchange_pair_for_activity(activity_id)
         .map_err(|e| e.to_string())
