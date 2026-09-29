@@ -359,6 +359,7 @@ function SymbolMappingRow({
           requestInstrumentType,
           requestProvider,
           requestQuoteCcy,
+          trimmedSymbol,
         );
         if (validationRequestSeq.current !== requestId) return;
 
@@ -532,7 +533,7 @@ export function AssetEditSheet({
   const exchangeOptions = useMemo(() => {
     const options = exchanges.map((e) => ({
       value: normalizeMic(e.mic),
-      label: `${e.longName} (${e.name})`,
+      label: `${e.longName} (${e.mic})`,
     }));
 
     if (currentMic && !options.some((option) => option.value === currentMic)) {
@@ -713,6 +714,8 @@ export function AssetEditSheet({
           <div className="flex items-center gap-3">
             <EditableTickerAvatar
               symbol={asset.displayCode ?? ""}
+              exchangeMic={asset.instrumentExchangeMic}
+              instrumentType={asset.instrumentType}
               assetId={asset.id}
               className="size-10"
               onEdit={() => setLogoDialogOpen(true)}
@@ -722,6 +725,8 @@ export function AssetEditSheet({
               onOpenChange={setLogoDialogOpen}
               assetId={asset.id}
               symbol={asset.displayCode ?? asset.name ?? ""}
+              exchangeMic={asset.instrumentExchangeMic}
+              instrumentType={asset.instrumentType}
               name={asset.name}
             />
             <div className="min-w-0 flex-1">

@@ -1002,7 +1002,7 @@ impl ActivityService {
             || normalize_quote_ccy_code(existing_asset_quote_ccy).is_some();
         let provider_quote_ccy = if allow_provider_lookup && !has_deterministic_precedence {
             self.quote_service
-                .resolve_symbol_quote(symbol, exchange_mic, instrument_type, None, None)
+                .resolve_symbol_quote(symbol, exchange_mic, instrument_type, None, None, None)
                 .await
                 .ok()
                 .and_then(|q| q.currency)
@@ -1045,7 +1045,7 @@ impl ActivityService {
         }
         let result = self
             .quote_service
-            .resolve_symbol_quote(symbol, exchange_mic, instrument_type, None, None)
+            .resolve_symbol_quote(symbol, exchange_mic, instrument_type, None, None, None)
             .await
             .ok()
             .and_then(|q| q.currency);
@@ -4743,9 +4743,10 @@ impl ActivityServiceTrait for ActivityService {
     fn get_transfer_pair_for_activity(
         &self,
         activity_id: String,
-    ) -> Result<InternalTransferPairResponse> {
-        let pair = self.require_internal_transfer_pair_for_activity(&activity_id)?;
-        Ok(Self::transfer_pair_response(pair))
+    ) -> Result<Option<InternalTransferPairResponse>> {
+        Ok(self
+            .load_internal_transfer_pair_for_activity(&activity_id)?
+            .map(Self::transfer_pair_response))
     }
 
     fn get_exchange_pair_for_activity(
