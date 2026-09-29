@@ -1,6 +1,7 @@
 import {
   getExchangePairForActivity,
   getTransferPairForActivity,
+  logger,
   searchActivities,
 } from "@/adapters";
 import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
@@ -91,8 +92,10 @@ export function useActivityActionDialogs() {
         });
         setFormOpen(true);
         return;
-      } catch {
-        // Fall back to single-leg editing for invalid groups.
+      } catch (error) {
+        // Fall back to single-leg editing for invalid/orphaned groups, but
+        // log so a transient fetch failure isn't indistinguishable from that.
+        logger.error(`Error loading exchange pair for activity ${activity.id}: ${String(error)}`);
       }
     }
 

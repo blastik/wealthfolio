@@ -401,7 +401,7 @@ export function useActivityForm({
                   asset: toAsset,
                   quantity: exchangeData.toQuantity,
                   currency: toCurrency,
-                  fee: exchangeData.fee || undefined,
+                  fee: exchangeData.fee,
                 },
               ],
             });
@@ -430,7 +430,7 @@ export function useActivityForm({
                 asset: toAsset,
                 quantity: exchangeData.toQuantity,
                 currency: toCurrency,
-                fee: exchangeData.fee || undefined,
+                fee: exchangeData.fee,
               },
             ],
           });

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { isLiabilityAccountType, QuoteMode } from "@/lib/constants";
 import { useHoldings } from "@/hooks/use-holdings";
+import { useActivityCurrency } from "../../hooks/use-activity-currency";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Alert, AlertDescription } from "@wealthfolio/ui/components/ui/alert";
 import { Button } from "@wealthfolio/ui/components/ui/button";
@@ -168,6 +169,9 @@ export function ExchangeForm({
       ...defaultValues,
     },
   });
+
+  useActivityCurrency(form, accounts, { isEditing, currencyField: "fromCurrency" });
+  useActivityCurrency(form, accounts, { isEditing, currencyField: "toCurrency" });
 
   const { watch } = form;
   const accountId = watch("accountId");

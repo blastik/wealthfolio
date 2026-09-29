@@ -136,4 +136,21 @@ describe("hasActivityForm", () => {
     expect(hasActivityForm(mapActivityTypeToPicker(ActivityType.TRANSFER_IN))).toBe(true);
     expect(hasActivityForm(mapActivityTypeToPicker(ActivityType.TRANSFER_OUT))).toBe(true);
   });
+
+  it("agrees with the picker mapping for both exchange legs", () => {
+    // EXCHANGE_OUT/IN are ADJUSTMENT rows distinguished only by subtype; the
+    // picker must inspect subtype too, or editing falls back to AdjustmentForm.
+    expect(mapActivityTypeToPicker(ActivityType.ADJUSTMENT, "EXCHANGE_OUT")).toBe("EXCHANGE");
+    expect(mapActivityTypeToPicker(ActivityType.ADJUSTMENT, "EXCHANGE_IN")).toBe("EXCHANGE");
+    expect(hasActivityForm(mapActivityTypeToPicker(ActivityType.ADJUSTMENT, "EXCHANGE_OUT"))).toBe(
+      true,
+    );
+  });
+
+  it("still maps a plain adjustment (no exchange subtype) to ADJUSTMENT", () => {
+    expect(mapActivityTypeToPicker(ActivityType.ADJUSTMENT)).toBe(ActivityType.ADJUSTMENT);
+    expect(mapActivityTypeToPicker(ActivityType.ADJUSTMENT, "OPTION_EXPIRY")).toBe(
+      ActivityType.ADJUSTMENT,
+    );
+  });
 });

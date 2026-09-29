@@ -13,7 +13,7 @@
 use super::super::economics::*;
 use super::super::{HoldingsCalculator, ProjectionRun, SideEffectBuffer};
 use crate::activities::Activity;
-use crate::errors::Result;
+use crate::errors::{CalculatorError, Result};
 use crate::portfolio::snapshot::AccountStateSnapshot;
 use log::warn;
 
@@ -173,11 +173,11 @@ impl HoldingsCalculator {
             ) {
                 Ok(rate) => Some(rate),
                 Err(e) => {
-                    warn!(
-                        "EXCHANGE_IN {}: failed to get {}->{} rate on {}: {}. Carrying cost basis unconverted.",
+                    return Err(CalculatorError::CurrencyConversion(format!(
+                        "EXCHANGE_IN {}: failed to get {}->{} rate on {}: {}",
                         activity.id, source_currency, position_currency, activity_date, e
-                    );
-                    None
+                    ))
+                    .into());
                 }
             }
         };

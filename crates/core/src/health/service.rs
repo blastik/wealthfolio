@@ -594,10 +594,12 @@ impl HealthService {
             effective_timezone,
         );
         let invalid_exchange_groups = invalid_exchange_groups_from_activities(
+            asset_service.as_ref(),
             &health_activities,
             &account_name_map,
             effective_timezone,
-        );
+        )
+        .await;
         let valuation_quality_issues = gather_valuation_quality_issues(
             valuation_service.as_ref(),
             snapshot_service.as_ref(),
@@ -854,7 +856,8 @@ fn invalid_transfer_groups_from_activities(
 /// Loads all activities and resolves in-kind exchange groups (EXCHANGE_OUT/
 /// EXCHANGE_IN, an ADJUSTMENT subtype pair), returning the ones that don't
 /// form a valid pair.
-fn invalid_exchange_groups_from_activities(
+async fn invalid_exchange_groups_from_activities(
+    asset_service: &dyn AssetServiceTrait,
     activities: &[Activity],
     account_names: &HashMap<String, String>,
     timezone: Option<&str>,
@@ -863,6 +866,26 @@ fn invalid_exchange_groups_from_activities(
     let resolution = ExchangePairResolution::from_activities(activities);
     let by_id: HashMap<&str, &Activity> = activities.iter().map(|a| (a.id.as_str(), a)).collect();
     let eligible_account_ids: HashSet<&str> = account_names.keys().map(String::as_str).collect();
+
+    let asset_ids: Vec<String> = activities
+        .iter()
+        .filter_map(|activity| activity.asset_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let assets_by_id: HashMap<String, Asset> = asset_service
+        .get_assets_by_asset_ids(&asset_ids)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "Failed to load assets for exchange-pair health check: {}",
+                e
+            );
+            Vec::new()
+        })
+        .into_iter()
+        .map(|asset| (asset.id.clone(), asset))
+        .collect();
 
     let mut groups: Vec<InvalidExchangeGroupInfo> = resolution
         .invalid_groups()
@@ -874,7 +897,7 @@ fn invalid_exchange_groups_from_activities(
                 .filter_map(|id| by_id.get(id.as_str()).copied())
                 .filter(|act| act.is_posted())
                 .filter(|act| eligible_account_ids.contains(act.account_id.as_str()))
-                .map(|act| exchange_leg_detail(act, account_names, tz))
+                .map(|act| exchange_leg_detail(act, account_names, &assets_by_id, tz))
                 .collect();
             (!legs.is_empty()).then(|| InvalidExchangeGroupInfo {
                 group_id: group.group_id.clone(),
@@ -890,7 +913,7 @@ fn invalid_exchange_groups_from_activities(
         {
             groups.push(InvalidExchangeGroupInfo {
                 group_id: format!("ungrouped:{}", activity.id),
-                legs: vec![exchange_leg_detail(activity, account_names, tz)],
+                legs: vec![exchange_leg_detail(activity, account_names, &assets_by_id, tz)],
             });
         }
     }
@@ -901,8 +924,15 @@ fn invalid_exchange_groups_from_activities(
 fn exchange_leg_detail(
     activity: &Activity,
     account_names: &HashMap<String, String>,
+    assets_by_id: &HashMap<String, Asset>,
     timezone: chrono_tz::Tz,
 ) -> ExchangeLegDetail {
+    let asset_symbol = activity.asset_id.as_ref().and_then(|asset_id| {
+        assets_by_id
+            .get(asset_id)
+            .and_then(|a| a.display_code.clone().or_else(|| a.instrument_symbol.clone()))
+            .or_else(|| Some(asset_id.clone()))
+    });
     ExchangeLegDetail {
         account_id: activity.account_id.clone(),
         account_name: account_names
@@ -910,7 +940,7 @@ fn exchange_leg_detail(
             .cloned()
             .unwrap_or_else(|| "Account".to_string()),
         subtype: activity.subtype.clone().unwrap_or_default(),
-        asset_symbol: activity.asset_id.clone(),
+        asset_symbol,
         quantity: activity.quantity,
         date: activity_date_in_tz(activity.activity_date, timezone),
     }
