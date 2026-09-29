@@ -913,7 +913,12 @@ async fn invalid_exchange_groups_from_activities(
         {
             groups.push(InvalidExchangeGroupInfo {
                 group_id: format!("ungrouped:{}", activity.id),
-                legs: vec![exchange_leg_detail(activity, account_names, &assets_by_id, tz)],
+                legs: vec![exchange_leg_detail(
+                    activity,
+                    account_names,
+                    &assets_by_id,
+                    tz,
+                )],
             });
         }
     }
@@ -930,7 +935,11 @@ fn exchange_leg_detail(
     let asset_symbol = activity.asset_id.as_ref().and_then(|asset_id| {
         assets_by_id
             .get(asset_id)
-            .and_then(|a| a.display_code.clone().or_else(|| a.instrument_symbol.clone()))
+            .and_then(|a| {
+                a.display_code
+                    .clone()
+                    .or_else(|| a.instrument_symbol.clone())
+            })
             .or_else(|| Some(asset_id.clone()))
     });
     ExchangeLegDetail {
